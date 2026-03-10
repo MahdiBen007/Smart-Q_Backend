@@ -1,0 +1,124 @@
+@host = http://localhost
+@base = {{host}}/api/dashboard
+@email = admin@smartqdz.local
+@password = password123
+
+@branchId = 019cd699-56d0-73c5-bf18-35c1254e67d2
+@serviceId = 019cd699-578b-7098-8b75-01df677d4ec4
+@staffId = 019cd699-5bee-7119-8a13-4d208e48c3a8
+@appointmentId = 019cd69b-eb43-7350-9c2d-6ab7fa754125
+@ticketId = 019cd69b-ec0e-7364-903f-d9e4ed5a4d68
+@queueEntryId = 019cd69b-ebed-718c-ba68-136015fbb1fd
+@notificationId = 019cd69b-ec6d-722d-a7a7-a2b81f75f255
+@queueSessionId = 019cd69b-ebd3-70a3-ac31-24ffa56bb131
+
+### Login
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "{{email}}",
+  "password": "{{password}}"
+}
+
+### Profile
+GET {{base}}/auth/me
+Authorization: Bearer {{token}}
+
+### Dashboard KPIs
+GET {{base}}/kpis
+Authorization: Bearer {{token}}
+
+### Dashboard Traffic
+GET {{base}}/traffic?range=7d
+Authorization: Bearer {{token}}
+
+### Live Queue
+GET {{base}}/live-queue
+Authorization: Bearer {{token}}
+
+### Queue Performance
+GET {{base}}/queue-performance
+Authorization: Bearer {{token}}
+
+### Top Navbar
+GET {{base}}/layout/top-navbar
+Authorization: Bearer {{token}}
+
+### Mark One Notification Read
+PATCH {{base}}/notifications/{{notificationId}}/read
+Authorization: Bearer {{token}}
+
+### Branches Bootstrap
+GET {{base}}/branches/bootstrap
+Authorization: Bearer {{token}}
+
+### Branch Details
+GET {{base}}/branches/{{branchId}}
+Authorization: Bearer {{token}}
+
+### Branch Services
+GET {{base}}/branches/{{branchId}}/services
+Authorization: Bearer {{token}}
+
+### Services Bootstrap
+GET {{base}}/services/bootstrap
+Authorization: Bearer {{token}}
+
+### Service Details
+GET {{base}}/services/{{serviceId}}
+Authorization: Bearer {{token}}
+
+### Staff Bootstrap
+GET {{base}}/staff/bootstrap
+Authorization: Bearer {{token}}
+
+### Staff Details
+GET {{base}}/staff/{{staffId}}
+Authorization: Bearer {{token}}
+
+### Appointments Bootstrap
+GET {{base}}/appointments/bootstrap
+Authorization: Bearer {{token}}
+
+### Appointment Details
+GET {{base}}/appointments/{{appointmentId}}
+Authorization: Bearer {{token}}
+
+### Queue Monitor Bootstrap
+GET {{base}}/queue-monitor/bootstrap
+Authorization: Bearer {{token}}
+
+### Call Queue Entry
+PATCH {{base}}/queue-monitor/entries/{{queueEntryId}}/call
+Authorization: Bearer {{token}}
+
+### Reset Queue Session
+POST {{base}}/queue-monitor/reset
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "queue_session_id": "{{queueSessionId}}"
+}
+
+### Walk-ins Bootstrap
+GET {{base}}/walk-ins/bootstrap
+Authorization: Bearer {{token}}
+
+### Check In Existing Ticket
+POST {{base}}/walk-ins/{{ticketId}}/check-in
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "result": "success"
+}
+
+### Analytics Bootstrap
+GET {{base}}/analytics/bootstrap
+Authorization: Bearer {{token}}
+
+### Dashboard Settings
+GET {{base}}/settings/dashboard
+Authorization: Bearer {{token}}
