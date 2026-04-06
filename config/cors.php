@@ -1,13 +1,27 @@
- <?php
+<?php
+
+$normalizeOrigin = static function (?string $origin): ?string {
+    if ($origin === null) {
+        return null;
+    }
+
+    $trimmed = trim($origin);
+
+    if ($trimmed === '') {
+        return null;
+    }
+
+    return rtrim($trimmed, '/');
+};
 
 $configuredOrigins = array_filter(array_map(
-    static fn (string $origin) => trim($origin),
+    static fn (string $origin) => $normalizeOrigin($origin),
     explode(',', (string) env('FRONTEND_URLS', ''))
 ));
 
 $defaultOrigins = array_filter([
-    env('FRONTEND_URL'),
-    env('FRONTEND_URL_ALT'),
+    $normalizeOrigin(env('FRONTEND_URL')),
+    $normalizeOrigin(env('FRONTEND_URL_ALT')),
 ]);
 
 return [
