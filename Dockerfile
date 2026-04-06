@@ -27,7 +27,7 @@ COPY vite.config.js ./
 RUN npm run build
 
 
-FROM php:8.3-apache-bookworm
+FROM php:8.4-apache-bookworm
 
 WORKDIR /var/www/html
 
@@ -54,4 +54,3 @@ RUN chmod +x /usr/local/bin/start-container \
 
 ENTRYPOINT ["start-container"]
 CMD ["apache2-foreground"]
-

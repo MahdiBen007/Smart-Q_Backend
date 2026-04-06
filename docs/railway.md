@@ -27,9 +27,9 @@ At minimum, set these values:
 - `APP_ENV=production`
 - `APP_DEBUG=false`
 - `APP_KEY=<generated Laravel key>`
-- `APP_URL=<your Railway backend domain>`
+- `APP_URL=https://${{RAILWAY_PUBLIC_DOMAIN}}`
 - `DB_CONNECTION=mysql`
-- `DB_URL=${{MySQL.DATABASE_URL}}`
+- `DB_URL=${{MySQL.MYSQL_URL}}`
 - `JWT_SECRET=<random secret>`
 - `FRONTEND_URL=<your frontend origin>`
 - `LOG_CHANNEL=stderr`
