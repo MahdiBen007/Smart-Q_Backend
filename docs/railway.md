@@ -25,6 +25,7 @@ At minimum, set these values:
 
 - `APP_ENV=production`
 - `APP_DEBUG=false`
+- `PHP 8.4` via `composer.json`
 - `APP_KEY=<generated Laravel key>`
 - `APP_URL=https://${{RAILWAY_PUBLIC_DOMAIN}}`
 - `DB_CONNECTION=mysql`
