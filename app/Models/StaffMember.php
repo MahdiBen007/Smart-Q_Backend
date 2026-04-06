@@ -22,6 +22,7 @@ class StaffMember extends Model
         'user_id',
         'company_id',
         'branch_id',
+        'service_id',
         'full_name',
         'display_staff_code',
         'employment_status',
@@ -52,6 +53,11 @@ class StaffMember extends Model
     public function branch(): BelongsTo
     {
         return $this->belongsTo(Branch::class);
+    }
+
+    public function service(): BelongsTo
+    {
+        return $this->belongsTo(Service::class);
     }
 
     public function servedQueueEntries(): HasMany

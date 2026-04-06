@@ -5,6 +5,9 @@ namespace App\Http\Requests\Api\Dashboard;
 use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Http\Exceptions\HttpResponseException;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
+use Illuminate\Validation\Rules\Exists;
 use Symfony\Component\HttpFoundation\Response;
 
 abstract class DashboardFormRequest extends FormRequest
@@ -57,5 +60,79 @@ abstract class DashboardFormRequest extends FormRequest
             'message' => $validator->errors()->first() ?: 'The given data was invalid.',
             'errors' => $validator->errors(),
         ], Response::HTTP_UNPROCESSABLE_ENTITY));
+    }
+
+    protected function currentCompanyId(): ?string
+    {
+        return $this->user()?->staffMember?->company_id;
+    }
+
+    protected function branchExistsRule(): Exists
+    {
+        $rule = Rule::exists('branches', 'id');
+        $companyId = $this->currentCompanyId();
+
+        if ($companyId !== null) {
+            $rule = $rule->where(fn ($query) => $query->where('company_id', $companyId));
+        }
+
+        return $rule;
+    }
+
+    protected function serviceExistsRule(): Exists
+    {
+        $rule = Rule::exists('services', 'id');
+        $companyId = $this->currentCompanyId();
+
+        if ($companyId !== null) {
+            $rule = $rule->where(fn ($query) => $query->whereIn(
+                'branch_id',
+                DB::table('branches')->select('id')->where('company_id', $companyId)
+            ));
+        }
+
+        return $rule;
+    }
+
+    protected function staffExistsRule(): Exists
+    {
+        $rule = Rule::exists('staff_members', 'id');
+        $companyId = $this->currentCompanyId();
+
+        if ($companyId !== null) {
+            $rule = $rule->where(fn ($query) => $query->where('company_id', $companyId));
+        }
+
+        return $rule;
+    }
+
+    protected function queueSessionExistsRule(): Exists
+    {
+        $rule = Rule::exists('daily_queue_sessions', 'id');
+        $companyId = $this->currentCompanyId();
+
+        if ($companyId !== null) {
+            $rule = $rule->where(fn ($query) => $query->whereIn(
+                'branch_id',
+                DB::table('branches')->select('id')->where('company_id', $companyId)
+            ));
+        }
+
+        return $rule;
+    }
+
+    protected function kioskExistsRule(): Exists
+    {
+        $rule = Rule::exists('kiosk_devices', 'id');
+        $companyId = $this->currentCompanyId();
+
+        if ($companyId !== null) {
+            $rule = $rule->where(fn ($query) => $query->whereIn(
+                'branch_id',
+                DB::table('branches')->select('id')->where('company_id', $companyId)
+            ));
+        }
+
+        return $rule;
     }
 }

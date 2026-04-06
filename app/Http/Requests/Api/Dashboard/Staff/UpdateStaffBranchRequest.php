@@ -7,7 +7,7 @@ class UpdateStaffBranchRequest extends StaffRequest
     public function rules(): array
     {
         return [
-            'branch_id' => ['required', 'exists:branches,id'],
+            'branch_id' => ['required', $this->branchExistsRule()],
         ];
     }
 }

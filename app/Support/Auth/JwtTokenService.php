@@ -11,10 +11,16 @@ use RuntimeException;
 
 class JwtTokenService
 {
-    public function issueAccessToken(User $user, ?string $ipAddress = null, ?string $userAgent = null): array
+    public function issueAccessToken(
+        User $user,
+        ?string $ipAddress = null,
+        ?string $userAgent = null,
+        ?int $ttlMinutes = null,
+    ): array
     {
         $issuedAt = CarbonImmutable::now();
-        $expiresAt = $issuedAt->addMinutes(max(1, (int) Config::get('jwt.ttl_minutes', 120)));
+        $resolvedTtl = max(1, $ttlMinutes ?? (int) Config::get('jwt.ttl_minutes', 120));
+        $expiresAt = $issuedAt->addMinutes($resolvedTtl);
         $jti = (string) Str::uuid();
 
         $payload = [

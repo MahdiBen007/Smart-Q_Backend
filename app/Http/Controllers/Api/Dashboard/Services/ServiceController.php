@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api\Dashboard\Services;
 
 use App\Http\Controllers\Api\Dashboard\DashboardApiController;
+use App\Http\Requests\Api\Dashboard\Services\ListServicesRequest;
 use App\Http\Requests\Api\Dashboard\Services\StoreServiceRequest;
 use App\Http\Requests\Api\Dashboard\Services\UpdateServiceRequest;
 use App\Http\Requests\Api\Dashboard\Services\UpdateServiceStatusRequest;
@@ -11,13 +12,17 @@ use App\Models\QueueEntry;
 use App\Models\Service;
 use App\Support\Dashboard\DashboardCatalog;
 use App\Support\Dashboard\DashboardFormatting;
+use Illuminate\Database\Eloquent\Builder;
 
 class ServiceController extends DashboardApiController
 {
-    public function bootstrap()
+    public function bootstrap(ListServicesRequest $request)
     {
-        $services = $this->baseQuery()->get();
-        $branches = Branch::query()->with(['dailyQueueSessions.queueEntries'])->orderBy('branch_name')->get();
+        $services = $this->applyFilters($this->baseQuery($request), $request)->get();
+        $branches = $this->scopeQueryByCompanyColumn(
+            Branch::query()->with(['dailyQueueSessions.queueEntries'])->orderBy('branch_name'),
+            $request
+        )->get();
 
         return $this->respond([
             'branchOptions' => ['All Branches', ...$branches->pluck('branch_name')->all()],
@@ -28,19 +33,18 @@ class ServiceController extends DashboardApiController
         ]);
     }
 
-    public function index()
+    public function index(ListServicesRequest $request)
     {
-        return $this->respond(
-            $this->baseQuery()
-                ->get()
-                ->map(fn (Service $service) => $this->transformService($service))
-                ->values()
-                ->all()
+        return $this->respondIndexCollection(
+            $request,
+            $this->applyFilters($this->baseQuery($request), $request),
+            fn (Service $service) => $this->transformService($service)
         );
     }
 
-    public function show(Service $service)
+    public function show(ListServicesRequest $request, Service $service)
     {
+        $this->ensureCompanyAccess($request, $service);
         $service->loadMissing($this->serviceRelations());
 
         return $this->respond($this->transformService($service));
@@ -52,6 +56,7 @@ class ServiceController extends DashboardApiController
         $service = Service::query()->create($this->servicePayload($validated));
 
         $service->branches()->sync($validated['branch_ids']);
+        $this->invalidateDashboardCache($request, $request->user()?->staffMember?->company_id);
 
         return $this->respond(
             $this->transformService($service->fresh($this->serviceRelations())),
@@ -62,12 +67,15 @@ class ServiceController extends DashboardApiController
 
     public function update(UpdateServiceRequest $request, Service $service)
     {
+        $this->ensureCompanyAccess($request, $service);
         $validated = $request->validated();
         $service->update($this->servicePayload($validated, $service));
 
         if (isset($validated['branch_ids'])) {
             $service->branches()->sync($validated['branch_ids']);
         }
+
+        $this->invalidateDashboardCache($request, $service->branch?->company_id);
 
         return $this->respond(
             $this->transformService($service->fresh($this->serviceRelations())),
@@ -77,9 +85,11 @@ class ServiceController extends DashboardApiController
 
     public function updateStatus(UpdateServiceStatusRequest $request, Service $service)
     {
+        $this->ensureCompanyAccess($request, $service);
         $service->update([
             'is_active' => $request->validated('status') === 'Active',
         ]);
+        $this->invalidateDashboardCache($request, $service->branch?->company_id);
 
         return $this->respond(
             $this->transformService($service->fresh($this->serviceRelations())),
@@ -87,9 +97,13 @@ class ServiceController extends DashboardApiController
         );
     }
 
-    protected function baseQuery()
+    protected function baseQuery(ListServicesRequest $request): Builder
     {
-        return Service::query()->with($this->serviceRelations())->orderBy('service_name');
+        return $this->scopeQueryByCompanyRelation(
+            Service::query()->with($this->serviceRelations())->orderBy('service_name'),
+            $request,
+            'branches'
+        );
     }
 
     protected function serviceRelations(): array
@@ -114,6 +128,33 @@ class ServiceController extends DashboardApiController
             'service_description' => array_key_exists('description', $validated) ? $validated['description'] : $service?->service_description,
             'service_icon' => array_key_exists('icon', $validated) ? $validated['icon'] : ($service?->service_icon ?? 'support'),
         ];
+    }
+
+    protected function applyFilters(Builder $query, ListServicesRequest $request): Builder
+    {
+        $search = trim((string) $request->input('search', ''));
+        $status = $request->input('status');
+        $branchId = $request->input('branch_id');
+
+        if ($search !== '') {
+            $query->where(function (Builder $searchQuery) use ($search): void {
+                $searchQuery
+                    ->where('service_name', 'like', '%'.$search.'%')
+                    ->orWhere('service_code', 'like', '%'.$search.'%')
+                    ->orWhere('service_subtitle', 'like', '%'.$search.'%')
+                    ->orWhere('service_description', 'like', '%'.$search.'%');
+            });
+        }
+
+        if (is_string($status) && $status !== '') {
+            $query->where('is_active', $status === 'Active');
+        }
+
+        if (is_string($branchId) && $branchId !== '') {
+            $query->whereHas('branches', fn (Builder $branchQuery) => $branchQuery->whereKey($branchId));
+        }
+
+        return $query;
     }
 
     protected function transformService(Service $service): array

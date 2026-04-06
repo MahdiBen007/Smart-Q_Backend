@@ -10,9 +10,9 @@ class ResolveQueueSessionRequest extends DashboardFormRequest
     public function rules(): array
     {
         return [
-            'queue_session_id' => ['nullable', 'exists:daily_queue_sessions,id'],
-            'branch_id' => ['nullable', 'exists:branches,id'],
-            'service_id' => ['nullable', 'exists:services,id'],
+            'queue_session_id' => ['nullable', $this->queueSessionExistsRule()],
+            'branch_id' => ['nullable', $this->branchExistsRule()],
+            'service_id' => ['nullable', $this->serviceExistsRule()],
         ];
     }
 

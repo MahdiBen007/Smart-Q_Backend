@@ -18,7 +18,7 @@ class StoreServiceRequest extends ServiceRequest
             'average_service_duration_minutes' => ['required', 'integer', 'min:1', 'max:180'],
             'status' => ['required', Rule::in(DashboardCatalog::SERVICE_STATUSES)],
             'branch_ids' => ['required', 'array', 'min:1'],
-            'branch_ids.*' => ['required', 'exists:branches,id'],
+            'branch_ids.*' => ['required', $this->branchExistsRule()],
         ];
     }
 }

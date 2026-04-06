@@ -11,6 +11,7 @@ use App\Models\StaffMember;
 use App\Support\Dashboard\DashboardMetricsService;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
+use Illuminate\Http\Request;
 
 class AnalyticsController extends DashboardApiController
 {
@@ -18,26 +19,41 @@ class AnalyticsController extends DashboardApiController
         protected DashboardMetricsService $metrics,
     ) {}
 
-    public function bootstrap()
+    public function bootstrap(Request $request)
     {
-        $payload = $this->rememberPayload('dashboard:analytics:bootstrap', function (): array {
-            $branches = Branch::query()
-                ->select(['id', 'branch_name'])
-                ->withCount(['appointments', 'walkInTickets'])
-                ->orderBy('branch_name')
-                ->get();
-            $services = Service::query()
-                ->select(['id', 'service_name'])
-                ->withCount(['appointments', 'walkInTickets'])
-                ->orderBy('service_name')
-                ->get();
-            $staff = StaffMember::query()
-                ->select(['id', 'full_name'])
-                ->withCount([
-                    'servedQueueEntries as completed_served_count' => fn ($query) => $query->where('queue_status', 'completed'),
-                ])
-                ->orderBy('full_name')
-                ->get();
+        $companyId = $this->currentCompanyId($request);
+        $branchId = $this->shouldRestrictToAssignedBranch($request)
+            ? $this->currentBranchId($request)
+            : null;
+        $payload = $this->rememberScopedPayload($request, 'analytics:bootstrap', function () use ($request, $companyId, $branchId): array {
+            $branchesQuery = $this->scopeQueryByCompanyColumn(
+                Branch::query()
+                    ->select(['id', 'branch_name'])
+                    ->withCount(['appointments', 'walkInTickets'])
+                    ->orderBy('branch_name'),
+                $request
+            );
+            $branches = $this->scopeQueryByAssignedBranchColumn($branchesQuery, $request, 'id')->get();
+            $servicesQuery = $this->scopeQueryByCompanyRelation(
+                Service::query()
+                    ->select(['id', 'service_name'])
+                    ->withCount(['appointments', 'walkInTickets'])
+                    ->orderBy('service_name'),
+                $request,
+                'branches'
+            );
+            $services = $this->scopeQueryByAssignedBranchRelation($servicesQuery, $request, 'branches')->get();
+            $staffQuery = $this->scopeQueryByCompanyColumn(
+                StaffMember::query()
+                    ->select(['id', 'full_name'])
+                    ->withCount([
+                        'servedQueueEntries as completed_served_count' => fn ($query) => $query->where('queue_status', 'completed'),
+                    ])
+                    ->orderBy('full_name'),
+                $request
+            );
+            $staff = $this->scopeQueryByAssignedBranchColumn($staffQuery, $request)->get();
+            $branchOptions = $branches->pluck('branch_name')->values()->all();
 
             return [
                 'ranges' => [
@@ -45,8 +61,10 @@ class AnalyticsController extends DashboardApiController
                     ['key' => 'week', 'label' => 'Last 7 Days'],
                     ['key' => 'month', 'label' => 'Last 30 Days'],
                 ],
-                'branches' => ['All Branches', ...$branches->pluck('branch_name')->all()],
-                'branchProfiles' => $this->branchProfiles($branches),
+                'branches' => $branchId === null
+                    ? ['All Branches', ...$branchOptions]
+                    : $branchOptions,
+                'branchProfiles' => $this->branchProfiles($branches, $branchId === null),
                 'baseFactorByRange' => [
                     'day' => 1,
                     'week' => 1.15,
@@ -58,9 +76,9 @@ class AnalyticsController extends DashboardApiController
                     'month' => 30,
                 ],
                 'trafficByRange' => [
-                    'day' => $this->trafficSeries(today(), today()),
-                    'week' => $this->trafficSeries(today()->subDays(6), today()),
-                    'month' => $this->trafficSeries(today()->subDays(29), today()),
+                    'day' => $this->trafficSeries(today(), today(), $companyId, $branchId),
+                    'week' => $this->trafficSeries(today()->subDays(6), today(), $companyId, $branchId),
+                    'month' => $this->trafficSeries(today()->subDays(29), today(), $companyId, $branchId),
                 ],
                 'baseServiceLoad' => $this->serviceLoad($services),
                 'baseLoadDistribution' => $this->loadDistribution($branches),
@@ -69,15 +87,15 @@ class AnalyticsController extends DashboardApiController
                     ->map(fn (int $offset) => today()->subDays($offset)->format('D'))
                     ->values()
                     ->all(),
-                'baseHeatmap' => $this->heatmapRows(),
-                'serviceFunnel' => $this->serviceFunnel(),
+                'baseHeatmap' => $this->heatmapRows($companyId, $branchId),
+                'serviceFunnel' => $this->serviceFunnel($companyId, $branchId),
             ];
         }, 20);
 
         return $this->respond($payload);
     }
 
-    protected function branchProfiles(Collection $branches): array
+    protected function branchProfiles(Collection $branches, bool $includeAllBranches = true): array
     {
         $profiles = [];
 
@@ -91,19 +109,21 @@ class AnalyticsController extends DashboardApiController
             ];
         }
 
-        $profiles['All Branches'] = [
-            'factor' => round(($branches->sum(fn (Branch $branch) => $branch->appointments_count + $branch->walk_in_tickets_count) / max(1, $branches->count())), 2),
-            'scheduled' => (int) $branches->sum('appointments_count'),
-            'walkIns' => (int) $branches->sum('walk_in_tickets_count'),
-        ];
+        if ($includeAllBranches) {
+            $profiles['All Branches'] = [
+                'factor' => round(($branches->sum(fn (Branch $branch) => $branch->appointments_count + $branch->walk_in_tickets_count) / max(1, $branches->count())), 2),
+                'scheduled' => (int) $branches->sum('appointments_count'),
+                'walkIns' => (int) $branches->sum('walk_in_tickets_count'),
+            ];
+        }
 
         return $profiles;
     }
 
-    protected function trafficSeries(Carbon $start, Carbon $end): array
+    protected function trafficSeries(Carbon $start, Carbon $end, ?string $companyId = null, ?string $branchId = null): array
     {
-        $appointmentCounts = $this->metrics->appointmentCountsByDate($start, $end);
-        $walkInCounts = $this->metrics->walkInCountsByDate($start, $end);
+        $appointmentCounts = $this->metrics->appointmentCountsByDate($start, $end, $companyId, $branchId);
+        $walkInCounts = $this->metrics->walkInCountsByDate($start, $end, $companyId, $branchId);
         $items = [];
         $cursor = $start->copy();
 
@@ -121,17 +141,17 @@ class AnalyticsController extends DashboardApiController
         return $items;
     }
 
-    protected function heatmapRows(): array
+    protected function heatmapRows(?string $companyId = null, ?string $branchId = null): array
     {
         $startDate = today()->subDays(6);
         $endDate = today();
         $days = collect(range(6, 0))
             ->map(fn (int $offset) => today()->subDays($offset)->copy())
             ->values();
-        $appointmentCounts = $this->metrics->appointmentCountsByDateAndHour($startDate, $endDate);
-        $walkInCounts = $this->metrics->walkInCountsByDateAndHour($startDate, $endDate);
+        $appointmentCounts = $this->metrics->appointmentCountsByDateAndHour($startDate, $endDate, $companyId, $branchId);
+        $walkInCounts = $this->metrics->walkInCountsByDateAndHour($startDate, $endDate, $companyId, $branchId);
 
-        return collect(range(8, 18))->map(function (int $hour) use ($days) {
+        return collect(range(8, 18))->map(function (int $hour) use ($days, $appointmentCounts, $walkInCounts) {
             return [
                 'hour' => str_pad((string) $hour, 2, '0', STR_PAD_LEFT).':00',
                 'values' => $days->map(function (Carbon $day) use ($hour, $appointmentCounts, $walkInCounts) {
@@ -194,12 +214,23 @@ class AnalyticsController extends DashboardApiController
         })->sortByDesc('score')->take(6)->values()->all();
     }
 
-    protected function serviceFunnel(): array
+    protected function serviceFunnel(?string $companyId = null, ?string $branchId = null): array
     {
-        $appointments = max(Appointment::query()->count(), 1);
-        $checkedIn = QueueEntry::query()->whereNotNull('checked_in_at')->count();
-        $serving = QueueEntry::query()->where('queue_status', 'serving')->count();
-        $completed = QueueEntry::query()->where('queue_status', 'completed')->count();
+        $appointmentsQuery = Appointment::query();
+        $queueEntriesQuery = QueueEntry::query();
+
+        if ($branchId !== null) {
+            $appointmentsQuery->where('branch_id', $branchId);
+            $queueEntriesQuery->whereHas('queueSession', fn ($queueSessionQuery) => $queueSessionQuery->where('branch_id', $branchId));
+        } elseif ($companyId !== null) {
+            $appointmentsQuery->whereHas('branch', fn ($branchQuery) => $branchQuery->where('company_id', $companyId));
+            $queueEntriesQuery->whereHas('queueSession.branch', fn ($branchQuery) => $branchQuery->where('company_id', $companyId));
+        }
+
+        $appointments = max($appointmentsQuery->count(), 1);
+        $checkedIn = (clone $queueEntriesQuery)->whereNotNull('checked_in_at')->count();
+        $serving = (clone $queueEntriesQuery)->where('queue_status', 'serving')->count();
+        $completed = (clone $queueEntriesQuery)->where('queue_status', 'completed')->count();
 
         return [
             ['stage' => 'Booked', 'rate' => '100%'],

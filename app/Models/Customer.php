@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Customer extends Model
@@ -34,14 +35,29 @@ class Customer extends Model
         return $this->hasMany(Appointment::class);
     }
 
+    public function latestAppointment(): HasOne
+    {
+        return $this->hasOne(Appointment::class)->latestOfMany('created_at');
+    }
+
     public function walkInTickets(): HasMany
     {
         return $this->hasMany(WalkInTicket::class);
     }
 
+    public function latestWalkInTicket(): HasOne
+    {
+        return $this->hasOne(WalkInTicket::class)->latestOfMany('created_at');
+    }
+
     public function queueEntries(): HasMany
     {
         return $this->hasMany(QueueEntry::class);
+    }
+
+    public function latestQueueEntry(): HasOne
+    {
+        return $this->hasOne(QueueEntry::class)->ofMany('updated_at', 'max');
     }
 
     public function checkInRecords(): HasMany

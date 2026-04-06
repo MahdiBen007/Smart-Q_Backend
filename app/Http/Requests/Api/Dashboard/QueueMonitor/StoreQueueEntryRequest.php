@@ -9,8 +9,8 @@ class StoreQueueEntryRequest extends DashboardFormRequest
     public function rules(): array
     {
         return [
-            'branch_id' => ['required', 'exists:branches,id'],
-            'service_id' => ['required', 'exists:services,id'],
+            'branch_id' => ['required', $this->branchExistsRule()],
+            'service_id' => ['required', $this->serviceExistsRule()],
             'customer_id' => ['nullable', 'exists:customers,id'],
             'customer_name' => ['nullable', 'string', 'max:255'],
             'phone_number' => ['nullable', 'string', 'max:50'],

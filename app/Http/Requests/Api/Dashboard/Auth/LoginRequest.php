@@ -11,6 +11,7 @@ class LoginRequest extends DashboardFormRequest
         return [
             'email' => ['required', 'email'],
             'password' => ['required', 'string', 'min:8'],
+            'remember' => ['sometimes', 'boolean'],
         ];
     }
 
@@ -26,6 +27,7 @@ class LoginRequest extends DashboardFormRequest
         return [
             'email' => 'email address',
             'password' => 'password',
+            'remember' => 'remember me preference',
         ];
     }
 }

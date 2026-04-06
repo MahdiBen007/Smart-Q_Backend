@@ -9,8 +9,12 @@ class StoreBranchRequest extends BranchRequest
 {
     public function rules(): array
     {
+        $currentCompanyId = $this->currentCompanyId();
+
         return [
-            'company_id' => ['nullable', 'exists:companies,id'],
+            'company_id' => $currentCompanyId !== null
+                ? ['nullable', Rule::in([$currentCompanyId])]
+                : ['nullable', 'exists:companies,id'],
             'name' => ['required', 'string', 'max:255'],
             'code' => ['nullable', 'string', 'max:50', 'unique:branches,branch_code'],
             'address' => ['required', 'string', 'max:255'],

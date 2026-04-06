@@ -3,19 +3,23 @@
 namespace App\Http\Controllers\Api\Dashboard\Branches;
 
 use App\Http\Controllers\Api\Dashboard\DashboardApiController;
+use App\Http\Requests\Api\Dashboard\Branches\ListBranchesRequest;
 use App\Http\Requests\Api\Dashboard\Branches\StoreBranchRequest;
 use App\Http\Requests\Api\Dashboard\Branches\UpdateBranchRequest;
 use App\Http\Requests\Api\Dashboard\Branches\UpdateBranchStatusRequest;
 use App\Models\Branch;
 use App\Models\Company;
+use App\Models\KioskDevice;
 use App\Models\Service;
+use App\Models\WalkInTicket;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Validation\ValidationException;
 
 class BranchController extends DashboardApiController
 {
-    public function bootstrap()
+    public function bootstrap(ListBranchesRequest $request)
     {
-        $branches = $this->baseQuery()->get();
+        $branches = $this->applyFilters($this->baseQuery($request), $request)->get();
 
         return $this->respond([
             'branches' => $branches->map(fn (Branch $branch) => $this->transformBranch($branch))->values()->all(),
@@ -23,19 +27,18 @@ class BranchController extends DashboardApiController
         ]);
     }
 
-    public function index()
+    public function index(ListBranchesRequest $request)
     {
-        return $this->respond(
-            $this->baseQuery()
-                ->get()
-                ->map(fn (Branch $branch) => $this->transformBranch($branch))
-                ->values()
-                ->all()
+        return $this->respondIndexCollection(
+            $request,
+            $this->applyFilters($this->baseQuery($request), $request),
+            fn (Branch $branch) => $this->transformBranch($branch)
         );
     }
 
-    public function show(Branch $branch)
+    public function show(ListBranchesRequest $request, Branch $branch)
     {
+        $this->ensureCompanyAccess($request, $branch);
         $branch->loadMissing($this->branchRelations());
 
         return $this->respond($this->transformBranch($branch));
@@ -45,8 +48,8 @@ class BranchController extends DashboardApiController
     {
         $validated = $request->validated();
 
-        $companyId = $validated['company_id']
-            ?? $request->user()?->staffMember?->company_id
+        $companyId = $this->currentCompanyId($request)
+            ?? $validated['company_id']
             ?? Company::query()->value('id');
 
         if (! $companyId) {
@@ -57,6 +60,8 @@ class BranchController extends DashboardApiController
 
         $branch = Branch::query()->create($this->branchPayload($validated, companyId: $companyId));
 
+        $this->invalidateDashboardCache($request, $companyId);
+
         return $this->respond(
             $this->transformBranch($branch->load($this->branchRelations())),
             'Branch created successfully.',
@@ -66,7 +71,9 @@ class BranchController extends DashboardApiController
 
     public function update(UpdateBranchRequest $request, Branch $branch)
     {
+        $this->ensureCompanyAccess($request, $branch);
         $branch->update($this->branchPayload($request->validated(), $branch));
+        $this->invalidateDashboardCache($request, $branch->company_id);
 
         return $this->respond(
             $this->transformBranch($branch->fresh($this->branchRelations())),
@@ -76,9 +83,11 @@ class BranchController extends DashboardApiController
 
     public function updateStatus(UpdateBranchStatusRequest $request, Branch $branch)
     {
+        $this->ensureCompanyAccess($request, $branch);
         $branch->update([
             'branch_status' => $request->validated('status'),
         ]);
+        $this->invalidateDashboardCache($request, $branch->company_id);
 
         return $this->respond(
             $this->transformBranch($branch->fresh($this->branchRelations())),
@@ -86,8 +95,41 @@ class BranchController extends DashboardApiController
         );
     }
 
-    public function services(Branch $branch)
+    public function destroy(ListBranchesRequest $request, Branch $branch)
     {
+        $this->ensureCompanyAccess($request, $branch);
+
+        $blockingRelations = $this->resolveDeletionBlockers($branch);
+
+        if ($blockingRelations !== []) {
+            throw ValidationException::withMessages([
+                'branch' => [
+                    sprintf(
+                        'Remove the linked %s before deleting this branch.',
+                        implode(', ', $blockingRelations)
+                    ),
+                ],
+            ]);
+        }
+
+        $deletedBranchId = $branch->getKey();
+        $companyId = $branch->company_id;
+
+        $branch->delete();
+        $this->invalidateDashboardCache($request, $companyId);
+
+        return $this->respond(
+            [
+                'id' => $deletedBranchId,
+                'deleted' => true,
+            ],
+            'Branch deleted successfully.'
+        );
+    }
+
+    public function services(ListBranchesRequest $request, Branch $branch)
+    {
+        $this->ensureCompanyAccess($request, $branch);
         $branch->loadMissing('services');
 
         return $this->respond(
@@ -101,9 +143,12 @@ class BranchController extends DashboardApiController
         );
     }
 
-    protected function baseQuery()
+    protected function baseQuery(ListBranchesRequest $request): Builder
     {
-        return Branch::query()->with($this->branchRelations())->orderBy('branch_name');
+        return $this->scopeQueryByCompanyColumn(
+            Branch::query()->with($this->branchRelations())->orderBy('branch_name'),
+            $request
+        );
     }
 
     protected function branchRelations(): array
@@ -130,6 +175,62 @@ class BranchController extends DashboardApiController
             'pin_top' => array_key_exists('pin_top', $validated) ? $validated['pin_top'] : $branch?->pin_top,
             'pin_left' => array_key_exists('pin_left', $validated) ? $validated['pin_left'] : $branch?->pin_left,
         ];
+    }
+
+    protected function applyFilters(Builder $query, ListBranchesRequest $request): Builder
+    {
+        $search = trim((string) $request->input('search', ''));
+        $status = $request->input('status');
+
+        if ($search !== '') {
+            $query->where(function (Builder $searchQuery) use ($search): void {
+                $searchQuery
+                    ->where('branch_name', 'like', '%'.$search.'%')
+                    ->orWhere('branch_address', 'like', '%'.$search.'%')
+                    ->orWhere('branch_code', 'like', '%'.$search.'%');
+            });
+        }
+
+        if (is_string($status) && $status !== '') {
+            $query->where('branch_status', $status);
+        }
+
+        return $query;
+    }
+
+    protected function resolveDeletionBlockers(Branch $branch): array
+    {
+        $blockers = [];
+
+        $hasDirectServices = Service::query()
+            ->where('branch_id', $branch->getKey())
+            ->exists();
+
+        if ($hasDirectServices || $branch->services()->exists()) {
+            $blockers[] = 'services';
+        }
+
+        if ($branch->staffMembers()->exists()) {
+            $blockers[] = 'staff records';
+        }
+
+        if ($branch->appointments()->exists()) {
+            $blockers[] = 'appointments';
+        }
+
+        if (WalkInTicket::withTrashed()->where('branch_id', $branch->getKey())->exists()) {
+            $blockers[] = 'walk-in tickets';
+        }
+
+        if ($branch->dailyQueueSessions()->exists()) {
+            $blockers[] = 'queue sessions';
+        }
+
+        if (KioskDevice::query()->where('branch_id', $branch->getKey())->exists()) {
+            $blockers[] = 'kiosk devices';
+        }
+
+        return $blockers;
     }
 
     protected function transformBranch(Branch $branch): array

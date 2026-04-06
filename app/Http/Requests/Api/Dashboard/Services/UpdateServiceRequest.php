@@ -22,7 +22,7 @@ class UpdateServiceRequest extends ServiceRequest
             'average_service_duration_minutes' => ['sometimes', 'integer', 'min:1', 'max:180'],
             'status' => ['sometimes', Rule::in(DashboardCatalog::SERVICE_STATUSES)],
             'branch_ids' => ['sometimes', 'array', 'min:1'],
-            'branch_ids.*' => ['required_with:branch_ids', 'exists:branches,id'],
+            'branch_ids.*' => ['required_with:branch_ids', $this->branchExistsRule()],
         ];
     }
 }

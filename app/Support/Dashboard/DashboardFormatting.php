@@ -29,6 +29,8 @@ class DashboardFormatting
         return match ($value) {
             'next' => 'Next',
             'serving' => 'Serving',
+            'completed' => 'Completed',
+            'cancelled' => 'Cancelled',
             default => 'Waiting',
         };
     }

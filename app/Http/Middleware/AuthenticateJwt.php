@@ -20,11 +20,11 @@ class AuthenticateJwt
 
     public function handle(Request $request, Closure $next): Response
     {
-        $token = $request->bearerToken();
+        $token = $request->bearerToken() ?: $request->cookie((string) config('jwt.cookie_name'));
 
         if (! $token) {
             return new JsonResponse([
-                'message' => 'Missing bearer token.',
+                'message' => 'Authentication is required to continue.',
             ], 401);
         }
 

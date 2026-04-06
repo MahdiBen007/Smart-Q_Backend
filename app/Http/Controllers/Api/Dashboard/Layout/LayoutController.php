@@ -8,6 +8,7 @@ use App\Models\Branch;
 use App\Models\Notification;
 use App\Models\User;
 use App\Support\Dashboard\DashboardFormatting;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 
 class LayoutController extends DashboardApiController
@@ -17,12 +18,20 @@ class LayoutController extends DashboardApiController
         /** @var User $user */
         $user = $request->user();
 
-        $branches = Branch::query()
-            ->orderBy('branch_name')
+        $branchQuery = $this->scopeQueryByCompanyColumn(
+            Branch::query()->orderBy('branch_name'),
+            $request
+        );
+        $branchQuery = $this->scopeQueryByAssignedBranchColumn($branchQuery, $request, 'id');
+
+        $branchNames = $branchQuery
             ->pluck('branch_name')
-            ->prepend('All Branches')
             ->values()
             ->all();
+
+        $branches = $this->shouldRestrictToAssignedBranch($request)
+            ? $branchNames
+            : collect($branchNames)->prepend('All Branches')->values()->all();
 
         $defaultBranchName = $user->staffMember?->branch?->branch_name;
         $defaultBranchIndex = $defaultBranchName !== null
@@ -50,18 +59,24 @@ class LayoutController extends DashboardApiController
             ->values()
             ->all();
 
-        $bookings = Appointment::query()
-            ->select(['id', 'customer_id', 'service_id', 'branch_id', 'appointment_date', 'appointment_time', 'created_at'])
-            ->with([
-                'customer:id,full_name',
-                'service:id,service_name',
-                'branch:id,branch_name',
-            ])
-            ->whereDate('appointment_date', '>=', now()->toDateString())
-            ->orderBy('appointment_date')
-            ->orderBy('appointment_time')
-            ->limit(8)
-            ->get()
+        $bookingsQuery = $this->scopeQueryByCompanyRelation(
+            Appointment::query()
+                ->select(['id', 'customer_id', 'service_id', 'branch_id', 'appointment_date', 'appointment_time', 'created_at'])
+                ->with([
+                    'customer:id,full_name',
+                    'service:id,service_name',
+                    'branch:id,branch_name',
+                ])
+                ->whereDate('appointment_date', '>=', now()->toDateString())
+                ->orderBy('appointment_date')
+                ->orderBy('appointment_time')
+                ->limit(8),
+            $request,
+            'branch'
+        );
+        $bookingsQuery = $this->scopeQueryByAssignedBranchColumn($bookingsQuery, $request);
+
+        $bookings = $bookingsQuery->get()
             ->map(fn (Appointment $appointment) => $this->transformBooking($appointment))
             ->values()
             ->all();

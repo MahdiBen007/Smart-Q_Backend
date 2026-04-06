@@ -20,6 +20,8 @@ use App\Models\StaffMember;
 use App\Models\WalkInTicket;
 use App\Support\Dashboard\DashboardFormatting;
 use App\Support\Dashboard\OperationalWorkflowService;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 
 class WalkInController extends DashboardApiController
@@ -28,20 +30,69 @@ class WalkInController extends DashboardApiController
         protected OperationalWorkflowService $workflow,
     ) {}
 
-    public function bootstrap()
+    public function bootstrap(Request $request)
     {
-        $branches = Branch::query()->orderBy('branch_name')->get();
-        $services = Service::query()->with('branches')->orderBy('service_name')->get();
-        $staffMembers = StaffMember::query()->with('branch')->orderBy('full_name')->get();
-        $tickets = WalkInTicket::query()
-            ->with($this->ticketRelations())
+        $today = now()->toDateString();
+        $branchesQuery = $this->scopeQueryByCompanyColumn(Branch::query()->orderBy('branch_name'), $request);
+        $branchesQuery = $this->scopeQueryByAssignedBranchColumn($branchesQuery, $request, 'id');
+        $branches = $branchesQuery->get();
+
+        $servicesQuery = $this->scopeQueryByCompanyRelation(
+            Service::query()->with('branches')->orderBy('service_name'),
+            $request,
+            'branches'
+        );
+        $servicesQuery = $this->scopeQueryByAssignedBranchRelation($servicesQuery, $request, 'branches');
+        $services = $servicesQuery->get();
+
+        $staffMembersQuery = $this->scopeQueryByCompanyColumn(
+            StaffMember::query()->with('branch')->orderBy('full_name'),
+            $request
+        );
+        $staffMembersQuery = $this->scopeQueryByAssignedBranchColumn($staffMembersQuery, $request);
+        $staffMembers = $staffMembersQuery->get();
+
+        $ticketsQuery = $this->scopeQueryByCompanyRelation(
+            WalkInTicket::query()
+                ->with($this->ticketRelations())
+                ->whereDate('created_at', $today)
+                ->latest(),
+            $request,
+            'branch'
+        );
+        $ticketsQuery = $this->scopeQueryByAssignedBranchColumn($ticketsQuery, $request);
+        $tickets = $ticketsQuery->get();
+        $ticketIds = $tickets->pluck('id');
+        $sessionsQuery = $this->scopeQueryByCompanyRelation(
+            DailyQueueSession::query()
+                ->with('queueEntries')
+                ->whereDate('session_date', $today)
+                ->latest('session_date'),
+            $request,
+            'branch'
+        );
+        $sessionsQuery = $this->scopeQueryByAssignedBranchRelation($sessionsQuery, $request, 'branch');
+        $sessions = $sessionsQuery->get();
+        $qrTokens = QrCodeToken::query()
+            ->whereIn('ticket_id', $ticketIds)
             ->latest()
             ->get();
-        $sessions = DailyQueueSession::query()->with('queueEntries')->latest('session_date')->get();
-        $qrTokens = QrCodeToken::query()->latest()->get();
-        $checkIns = CheckInRecord::query()->latest()->get();
-        $kiosks = KioskDevice::query()->orderBy('device_identifier')->get();
-        $customers = Customer::query()->latest()->get();
+        $checkIns = CheckInRecord::query()
+            ->whereHas('qrToken', fn (Builder $query) => $query->whereIn('ticket_id', $ticketIds))
+            ->latest()
+            ->get();
+        $kiosksQuery = $this->scopeQueryByCompanyRelation(
+            KioskDevice::query()->orderBy('device_identifier'),
+            $request,
+            'branch'
+        );
+        $kiosksQuery = $this->scopeQueryByAssignedBranchRelation($kiosksQuery, $request, 'branch');
+        $kiosks = $kiosksQuery->get();
+        $customers = $tickets
+            ->map(fn (WalkInTicket $ticket) => $ticket->customer)
+            ->filter()
+            ->unique(fn (Customer $customer) => $customer->getKey())
+            ->values();
 
         return $this->respond([
             'branches' => $branches->map(fn (Branch $branch) => [
@@ -134,7 +185,11 @@ class WalkInController extends DashboardApiController
 
     public function store(StoreWalkInRequest $request)
     {
+        $branch = Branch::query()->findOrFail($request->validated('branch_id'));
+        $this->ensureCompanyAccess($request, $branch);
+
         $created = $this->workflow->registerWalkIn($request->validated());
+        $this->invalidateDashboardCache($request, $this->currentCompanyId($request));
 
         return $this->respond(
             [
@@ -152,6 +207,7 @@ class WalkInController extends DashboardApiController
 
     public function checkIn(CheckInWalkInRequest $request, WalkInTicket $ticket)
     {
+        $this->ensureCompanyAccess($request, $ticket);
         $validated = $request->validated();
 
         $result = $validated['result'] ?? CheckInResult::Success->value;
@@ -187,6 +243,7 @@ class WalkInController extends DashboardApiController
                 'token_status' => TokenStatus::Consumed,
             ]);
         }
+        $this->invalidateDashboardCache($request, $ticket->branch?->company_id);
 
         return $this->respond([
             'ticket' => $this->transformTicket($ticket->fresh($this->ticketRelations())),
@@ -202,10 +259,12 @@ class WalkInController extends DashboardApiController
 
     public function escalate(EscalateWalkInRequest $request, WalkInTicket $ticket)
     {
+        $this->ensureCompanyAccess($request, $ticket);
         $ticket->update([
             'ticket_status' => TicketStatus::Escalated,
             'notes' => $request->validated('notes') ?? 'Escalated from the dashboard walk-ins API.',
         ]);
+        $this->invalidateDashboardCache($request, $ticket->branch?->company_id);
 
         return $this->respond(
             $this->transformTicket($ticket->fresh($this->ticketRelations())),
@@ -213,8 +272,9 @@ class WalkInController extends DashboardApiController
         );
     }
 
-    public function complete(WalkInTicket $ticket)
+    public function complete(Request $request, WalkInTicket $ticket)
     {
+        $this->ensureCompanyAccess($request, $ticket);
         $queueEntry = $ticket->queueEntries()
             ->whereNotIn('queue_status', ['completed', 'cancelled'])
             ->latest()
@@ -227,6 +287,7 @@ class WalkInController extends DashboardApiController
                 'ticket_status' => TicketStatus::Completed,
             ]);
         }
+        $this->invalidateDashboardCache($request, $ticket->branch?->company_id);
 
         return $this->respond(
             $this->transformTicket($ticket->fresh($this->ticketRelations())),

@@ -23,8 +23,6 @@ class Appointment extends Model
         'branch_id',
         'service_id',
         'staff_id',
-        'start_date_time',
-        'end_date_time',
         'appointment_date',
         'appointment_time',
         'appointment_status',
@@ -33,8 +31,6 @@ class Appointment extends Model
     protected function casts(): array
     {
         return [
-            'start_date_time' => 'datetime',
-            'end_date_time' => 'datetime',
             'appointment_date' => 'date',
             'appointment_status' => AppointmentStatus::class,
         ];
