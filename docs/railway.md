@@ -1,14 +1,12 @@
 # Railway Deployment
 
-This project includes a production-ready `Dockerfile` for deploying the Laravel backend to Railway.
+This project is configured for the standard Railway Laravel deployment flow using Railpack, not Docker.
 
 ## What this setup does
 
-- Builds Composer dependencies in a dedicated stage.
-- Builds Vite assets in a dedicated Node stage.
-- Serves Laravel through Apache with `public/` as the document root.
-- Binds Apache to Railway's `PORT` variable at container startup.
-- Optionally runs `php artisan migrate --force` when `RUN_MIGRATIONS=true`.
+- Lets Railway auto-detect Laravel and run it via its PHP/Laravel runtime.
+- Runs `php artisan migrate --force` as a pre-deploy command through `railway.json`.
+- Uses `/up` as the healthcheck path.
 
 ## Deploy steps
 
@@ -16,9 +14,10 @@ This project includes a production-ready `Dockerfile` for deploying the Laravel 
 2. In Railway, create a new project.
 3. Add a `MySQL` service.
 4. Add a new service from your GitHub repository.
-5. Railway will detect the root `Dockerfile` and build from it automatically.
+5. Railway will use Railpack because there is no `Dockerfile` in the repository root.
 6. Generate a public domain for the app service.
 7. Add the variables from `.env.railway.example` to the app service.
+8. Redeploy the app service.
 
 ## Required variables
 
