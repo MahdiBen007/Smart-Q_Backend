@@ -30,6 +30,11 @@ At minimum, set these values:
 - `APP_URL=https://${{RAILWAY_PUBLIC_DOMAIN}}`
 - `DB_CONNECTION=mysql`
 - `DB_URL=${{MySQL.MYSQL_URL}}`
+- `DB_HOST=${{MySQL.MYSQLHOST}}`
+- `DB_PORT=${{MySQL.MYSQLPORT}}`
+- `DB_DATABASE=${{MySQL.MYSQLDATABASE}}`
+- `DB_USERNAME=${{MySQL.MYSQLUSER}}`
+- `DB_PASSWORD=${{MySQL.MYSQLPASSWORD}}`
 - `JWT_SECRET=<random secret>`
 - `FRONTEND_URL=<your frontend origin>`
 - `LOG_CHANNEL=stderr`

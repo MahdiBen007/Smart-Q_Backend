@@ -15,6 +15,30 @@ mkdir -p \
 
 chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache
 
+if [ -z "${DB_URL:-}" ] && [ -n "${MYSQL_URL:-}" ]; then
+    export DB_URL="${MYSQL_URL}"
+fi
+
+if [ -z "${DB_HOST:-}" ] && [ -n "${MYSQLHOST:-}" ]; then
+    export DB_HOST="${MYSQLHOST}"
+fi
+
+if [ -z "${DB_PORT:-}" ] && [ -n "${MYSQLPORT:-}" ]; then
+    export DB_PORT="${MYSQLPORT}"
+fi
+
+if [ -z "${DB_DATABASE:-}" ] && [ -n "${MYSQLDATABASE:-}" ]; then
+    export DB_DATABASE="${MYSQLDATABASE}"
+fi
+
+if [ -z "${DB_USERNAME:-}" ] && [ -n "${MYSQLUSER:-}" ]; then
+    export DB_USERNAME="${MYSQLUSER}"
+fi
+
+if [ -z "${DB_PASSWORD:-}" ] && [ -n "${MYSQLPASSWORD:-}" ]; then
+    export DB_PASSWORD="${MYSQLPASSWORD}"
+fi
+
 if [ ! -L /var/www/html/public/storage ]; then
     php artisan storage:link >/dev/null 2>&1 || true
 fi
@@ -22,8 +46,21 @@ fi
 php artisan optimize:clear >/dev/null 2>&1 || true
 
 if [ "${RUN_MIGRATIONS:-false}" = "true" ]; then
-    php artisan migrate --force
+    migration_attempt=1
+
+    while [ "${migration_attempt}" -le 10 ]; do
+        if php artisan migrate --force; then
+            break
+        fi
+
+        if [ "${migration_attempt}" -eq 10 ]; then
+            exit 1
+        fi
+
+        echo "Database is not ready yet. Retrying migrations in 5 seconds..."
+        migration_attempt=$((migration_attempt + 1))
+        sleep 5
+    done
 fi
 
 exec "$@"
-
