@@ -1888,9 +1888,13 @@ class OperationalScenarioSeeder extends Seeder
                         'session_status' => $sessionStatus,
                     ]
                 );
+                $positionOffset = (int) QueueEntry::query()
+                    ->where('queue_session_id', $session->getKey())
+                    ->max('queue_position');
 
                 for ($position = 1; $position <= (6 * $scale); $position++) {
                     $sequence++;
+                    $queuePosition = $positionOffset + $position;
                     $customer = $customers[$customerKeys[$sequence % count($customerKeys)]];
                     $ticketNumber = $scenario['ticket_base'] + ($daysBack * 10) + $position;
                     $createdAt = $sessionDate->copy()->setTime(8 + $position, 5 + (($sequence * 7) % 40));
@@ -1971,7 +1975,7 @@ class OperationalScenarioSeeder extends Seeder
                         [
                             'queue_session_id' => $session->getKey(),
                             'customer_id' => $customer->getKey(),
-                            'queue_position' => $position,
+                            'queue_position' => $queuePosition,
                             'queue_status' => $queueStatus,
                             'checked_in_at' => $checkedInAt,
                             'service_started_at' => $serviceStartedAt,
