@@ -274,6 +274,19 @@ class OperationalScenarioSeeder extends Seeder
     {
         $definitions = [
             [
+                'key' => 'mahdi_admin',
+                'email' => 'Mahdi@smartq.com',
+                'phone_number' => '+213500000100',
+                'full_name' => 'Mahdi SmartQ',
+                'display_staff_code' => 'STF-00000',
+                'branch_key' => 'hq',
+                'role' => UserRoleName::Admin,
+                'employment_status' => EmploymentStatus::Active,
+                'is_online' => true,
+                'avatar_url' => null,
+                'password' => '12345678',
+            ],
+            [
                 'key' => 'admin',
                 'email' => 'admin@smartq.app',
                 'phone_number' => '+213500000101',
@@ -370,6 +383,19 @@ class OperationalScenarioSeeder extends Seeder
                 'avatar_url' => null,
             ],
             [
+                'key' => 'moumen_staff',
+                'email' => 'moumen@smartq.com',
+                'phone_number' => '+213500000110',
+                'full_name' => 'Moumen SmartQ',
+                'display_staff_code' => 'STF-00010',
+                'branch_key' => 'hq',
+                'role' => UserRoleName::Staff,
+                'employment_status' => EmploymentStatus::Active,
+                'is_online' => true,
+                'avatar_url' => null,
+                'password' => '12345678',
+            ],
+            [
                 'key' => 'cst_inactive',
                 'email' => 'adel.ferrah@smartq.app',
                 'phone_number' => '+213500000109',
@@ -392,7 +418,7 @@ class OperationalScenarioSeeder extends Seeder
                 ['email' => $definition['email']],
                 [
                     'phone_number' => $definition['phone_number'],
-                    'password_hash' => Hash::make('Password123!'),
+                    'password_hash' => Hash::make($definition['password'] ?? 'Password123!'),
                     'is_active' => $definition['employment_status'] !== EmploymentStatus::Inactive,
                 ]
             );
