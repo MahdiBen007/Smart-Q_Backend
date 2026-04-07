@@ -59,6 +59,7 @@ class OperationalScenarioSeeder extends Seeder
         $this->seedWalkInsAndQueue($branches, $services, $staff, $customers, $appointments, $kiosks);
         $this->seedNotifications($staff);
         $this->seedAuthArtifacts($staff, $customers);
+        $this->seedHighVolumeScenarios($branches, $services, $staff, $customers, $kiosks);
     }
 
     protected function seedCompany(): Company
@@ -1675,6 +1676,379 @@ class OperationalScenarioSeeder extends Seeder
             );
 
             $this->setTimestamps($token, $definition['created_at'], $definition['used_at'] ?? $definition['created_at']);
+        }
+    }
+
+    protected function seedHighVolumeScenarios(
+        array $branches,
+        array $services,
+        array $staff,
+        array $customers,
+        array $kiosks,
+    ): void {
+        $loadCustomers = $this->seedHighVolumeCustomers();
+        $allCustomers = array_merge($customers, $loadCustomers);
+
+        $this->seedHighVolumeAppointments($branches, $services, $staff, $allCustomers);
+        $this->seedHighVolumeWalkInsAndQueue($branches, $services, $staff, $allCustomers, $kiosks);
+        $this->seedHighVolumeNotifications($staff);
+    }
+
+    protected function seedHighVolumeCustomers(): array
+    {
+        $firstNames = [
+            'Amina', 'Yacine', 'Sofiane', 'Meriem', 'Nassim', 'Lina', 'Walid', 'Imane',
+            'Adel', 'Farah', 'Nadia', 'Karim', 'Rania', 'Samir', 'Leila', 'Mourad',
+        ];
+        $lastNames = [
+            'Bensaid', 'Khelifi', 'Mansouri', 'Bouguerra', 'Hamdi', 'Saadi', 'Ferhat', 'Toumi',
+            'Benkacem', 'Ait Ali', 'Rahmani', 'Cherif', 'Boudiaf', 'Kaci', 'Benali', 'Sahraoui',
+        ];
+
+        $customers = [];
+
+        for ($index = 1; $index <= 160; $index++) {
+            $key = sprintf('load_customer_%03d', $index);
+            $firstName = $firstNames[$index % count($firstNames)];
+            $lastName = $lastNames[($index * 3) % count($lastNames)];
+            $fullName = sprintf('%s %s', $firstName, $lastName);
+            $phoneNumber = sprintf('+213556%06d', $index);
+            $email = $index % 5 === 0
+                ? null
+                : sprintf('load.customer.%03d@smartq-load.test', $index);
+            $portalUser = $index % 9 === 0 && $email !== null;
+            $userId = null;
+
+            if ($portalUser) {
+                $user = User::query()->updateOrCreate(
+                    ['email' => $email],
+                    [
+                        'phone_number' => $phoneNumber,
+                        'password_hash' => Hash::make('Password123!'),
+                        'is_active' => $index % 18 !== 0,
+                    ]
+                );
+
+                $this->syncRole($user, UserRoleName::Customer);
+                $userId = $user->getKey();
+            }
+
+            $customer = Customer::query()->updateOrCreate(
+                ['phone_number' => $phoneNumber],
+                [
+                    'user_id' => $userId,
+                    'full_name' => $fullName,
+                    'email_address' => $email,
+                ]
+            );
+
+            $customers[$key] = $customer;
+        }
+
+        return $customers;
+    }
+
+    protected function seedHighVolumeAppointments(
+        array $branches,
+        array $services,
+        array $staff,
+        array $customers,
+    ): void {
+        $customerKeys = array_keys($customers);
+        $scenarios = [
+            ['branch_key' => 'hq', 'service_key' => 'inquiry', 'staff_key' => 'hq_teller', 'time' => '09:00:00'],
+            ['branch_key' => 'hq', 'service_key' => 'premium', 'staff_key' => 'ops_manager', 'time' => '10:20:00'],
+            ['branch_key' => 'alg', 'service_key' => 'business', 'staff_key' => 'alg_manager', 'time' => '11:40:00'],
+            ['branch_key' => 'cst', 'service_key' => 'digital', 'staff_key' => 'cst_advisor', 'time' => '13:10:00'],
+            ['branch_key' => 'orn', 'service_key' => 'card', 'staff_key' => null, 'time' => '15:30:00'],
+        ];
+
+        $sequence = 0;
+
+        for ($dayOffset = -30; $dayOffset <= 12; $dayOffset++) {
+            foreach ($scenarios as $scenarioIndex => $scenario) {
+                $sequence++;
+                $date = today()->copy()->addDays($dayOffset);
+                $customer = $customers[$customerKeys[$sequence % count($customerKeys)]];
+
+                $status = match (true) {
+                    $dayOffset > 0 && $sequence % 5 === 0 => AppointmentStatus::Pending,
+                    $dayOffset > 0 => AppointmentStatus::Confirmed,
+                    $dayOffset === 0 && $scenarioIndex === 0 => AppointmentStatus::Active,
+                    $dayOffset === 0 && $sequence % 4 === 0 => AppointmentStatus::Pending,
+                    $dayOffset < 0 && $sequence % 11 === 0 => AppointmentStatus::Cancelled,
+                    $dayOffset < 0 && $sequence % 7 === 0 => AppointmentStatus::NoShow,
+                    default => AppointmentStatus::Confirmed,
+                };
+
+                $staffId = in_array($status, [AppointmentStatus::Pending, AppointmentStatus::Cancelled], true)
+                    ? null
+                    : ($scenario['staff_key'] ? $staff[$scenario['staff_key']]['member']->getKey() : null);
+
+                $appointment = Appointment::query()->updateOrCreate(
+                    [
+                        'customer_id' => $customer->getKey(),
+                        'branch_id' => $branches[$scenario['branch_key']]->getKey(),
+                        'service_id' => $services[$scenario['service_key']]->getKey(),
+                        'appointment_date' => $date->toDateString(),
+                        'appointment_time' => $scenario['time'],
+                    ],
+                    [
+                        'staff_id' => $staffId,
+                        'appointment_status' => $status,
+                    ]
+                );
+
+                $createdAt = $dayOffset >= 0
+                    ? now()->subDays(max(1, 14 - $dayOffset))->setTime(8 + ($sequence % 7), 5)
+                    : $date->copy()->subDays(2)->setTime(8 + ($sequence % 8), 15);
+
+                $this->setTimestamps(
+                    $appointment,
+                    $createdAt,
+                    $dayOffset > 0
+                        ? $createdAt->copy()->addHours(3)
+                        : min(now(), $createdAt->copy()->addHours(6))
+                );
+            }
+        }
+    }
+
+    protected function seedHighVolumeWalkInsAndQueue(
+        array $branches,
+        array $services,
+        array $staff,
+        array $customers,
+        array $kiosks,
+    ): void {
+        $customerKeys = array_keys($customers);
+        $scenarios = [
+            ['branch_key' => 'hq', 'service_key' => 'inquiry', 'served_by_key' => 'hq_teller', 'kiosk_key' => 'hq_front', 'ticket_base' => 5000],
+            ['branch_key' => 'hq', 'service_key' => 'cash', 'served_by_key' => 'ops_manager', 'kiosk_key' => 'hq_priority', 'ticket_base' => 6000],
+            ['branch_key' => 'alg', 'service_key' => 'business', 'served_by_key' => 'alg_manager', 'kiosk_key' => 'alg_business', 'ticket_base' => 7000],
+            ['branch_key' => 'cst', 'service_key' => 'digital', 'served_by_key' => 'cst_advisor', 'kiosk_key' => 'cst_quick', 'ticket_base' => 8000],
+            ['branch_key' => 'orn', 'service_key' => 'card', 'served_by_key' => 'oran_support', 'kiosk_key' => 'orn_side', 'ticket_base' => 9000],
+        ];
+
+        $sequence = 0;
+
+        for ($daysBack = 0; $daysBack <= 11; $daysBack++) {
+            $sessionDate = today()->copy()->subDays($daysBack);
+
+            foreach ($scenarios as $scenarioIndex => $scenario) {
+                $sessionStatus = $daysBack === 0
+                    ? match ($scenarioIndex) {
+                        2 => QueueSessionStatus::Paused,
+                        4 => QueueSessionStatus::ClosingSoon,
+                        default => QueueSessionStatus::Live,
+                    }
+                    : QueueSessionStatus::Live;
+
+                $session = DailyQueueSession::query()->updateOrCreate(
+                    [
+                        'branch_id' => $branches[$scenario['branch_key']]->getKey(),
+                        'service_id' => $services[$scenario['service_key']]->getKey(),
+                        'session_date' => $sessionDate->toDateString(),
+                    ],
+                    [
+                        'session_start_time' => '08:00:00',
+                        'session_end_time' => '18:00:00',
+                        'session_status' => $sessionStatus,
+                    ]
+                );
+
+                for ($position = 1; $position <= 6; $position++) {
+                    $sequence++;
+                    $customer = $customers[$customerKeys[$sequence % count($customerKeys)]];
+                    $ticketNumber = $scenario['ticket_base'] + ($daysBack * 10) + $position;
+                    $createdAt = $sessionDate->copy()->setTime(8 + $position, 5 + (($sequence * 7) % 40));
+
+                    if ($daysBack === 0) {
+                        $queueStatus = match ($position) {
+                            1 => QueueEntryStatus::Serving,
+                            2 => QueueEntryStatus::Next,
+                            default => QueueEntryStatus::Waiting,
+                        };
+                    } else {
+                        $queueStatus = match (true) {
+                            $position === 6 && $daysBack % 4 === 0 => QueueEntryStatus::Cancelled,
+                            $position === 5 && $daysBack % 3 === 0 => QueueEntryStatus::Cancelled,
+                            default => QueueEntryStatus::Completed,
+                        };
+                    }
+
+                    $ticketStatus = match ($queueStatus) {
+                        QueueEntryStatus::Serving => TicketStatus::Serving,
+                        QueueEntryStatus::Next => TicketStatus::CheckedIn,
+                        QueueEntryStatus::Waiting => TicketStatus::Queued,
+                        QueueEntryStatus::Completed => TicketStatus::Completed,
+                        QueueEntryStatus::Cancelled => TicketStatus::Escalated,
+                    };
+
+                    $checkedInAt = in_array($queueStatus, [QueueEntryStatus::Serving, QueueEntryStatus::Next, QueueEntryStatus::Completed], true)
+                        ? $createdAt->copy()->addMinutes(4)
+                        : null;
+                    $serviceStartedAt = in_array($queueStatus, [QueueEntryStatus::Serving, QueueEntryStatus::Completed], true)
+                        ? $createdAt->copy()->addMinutes(11)
+                        : null;
+                    $servedByStaffId = in_array($queueStatus, [QueueEntryStatus::Serving, QueueEntryStatus::Completed], true)
+                        ? $staff[$scenario['served_by_key']]['member']->getKey()
+                        : null;
+                    $tokenStatus = match ($queueStatus) {
+                        QueueEntryStatus::Waiting => TokenStatus::Active,
+                        QueueEntryStatus::Cancelled => TokenStatus::Expired,
+                        default => TokenStatus::Consumed,
+                    };
+                    $checkInResult = match ($queueStatus) {
+                        QueueEntryStatus::Serving, QueueEntryStatus::Next, QueueEntryStatus::Completed => CheckInResult::Success,
+                        QueueEntryStatus::Cancelled => CheckInResult::ManualAssist,
+                        default => null,
+                    };
+
+                    $ticket = WalkInTicket::query()->updateOrCreate(
+                        [
+                            'branch_id' => $branches[$scenario['branch_key']]->getKey(),
+                            'ticket_number' => $ticketNumber,
+                        ],
+                        [
+                            'customer_id' => $customer->getKey(),
+                            'service_id' => $services[$scenario['service_key']]->getKey(),
+                            'queue_session_id' => $session->getKey(),
+                            'appointment_id' => null,
+                            'ticket_source' => match ($position % 4) {
+                                0 => TicketSource::StaffAssisted,
+                                1 => TicketSource::Reception,
+                                2 => TicketSource::Kiosk,
+                                default => TicketSource::QrScan,
+                            },
+                            'ticket_status' => $ticketStatus,
+                            'notes' => $queueStatus === QueueEntryStatus::Cancelled
+                                ? 'Escalated during load test scenario to simulate interrupted service flow.'
+                                : null,
+                        ]
+                    );
+
+                    $this->setTimestamps(
+                        $ticket,
+                        $createdAt,
+                        $serviceStartedAt ?? $checkedInAt ?? $createdAt->copy()->addMinutes(18)
+                    );
+
+                    $entry = QueueEntry::query()->updateOrCreate(
+                        ['ticket_id' => $ticket->getKey()],
+                        [
+                            'queue_session_id' => $session->getKey(),
+                            'customer_id' => $customer->getKey(),
+                            'queue_position' => $position,
+                            'queue_status' => $queueStatus,
+                            'checked_in_at' => $checkedInAt,
+                            'service_started_at' => $serviceStartedAt,
+                            'served_by_staff_id' => $servedByStaffId,
+                            'appointment_id' => null,
+                        ]
+                    );
+
+                    $this->setTimestamps(
+                        $entry,
+                        $createdAt,
+                        $serviceStartedAt ?? $checkedInAt ?? $createdAt->copy()->addMinutes(20)
+                    );
+
+                    $tokenValue = sprintf(
+                        'LOAD-%s-%s-%02d-%02d',
+                        strtoupper($scenario['branch_key']),
+                        $sessionDate->format('Ymd'),
+                        $scenarioIndex + 1,
+                        $position
+                    );
+
+                    $token = QrCodeToken::query()->updateOrCreate(
+                        ['token_value' => $tokenValue],
+                        [
+                            'ticket_id' => $ticket->getKey(),
+                            'appointment_id' => null,
+                            'expiration_date_time' => $createdAt->copy()->addHours(8),
+                            'used_date_time' => $checkedInAt,
+                            'token_status' => $tokenStatus,
+                        ]
+                    );
+
+                    $this->setTimestamps($token, $createdAt, $checkedInAt ?? $createdAt);
+
+                    if ($checkInResult !== null) {
+                        $record = CheckInRecord::query()->updateOrCreate(
+                            ['qr_token_id' => $token->getKey()],
+                            [
+                                'kiosk_id' => $kiosks[$scenario['kiosk_key']]->getKey(),
+                                'customer_id' => $customer->getKey(),
+                                'check_in_date_time' => $checkedInAt ?? $createdAt,
+                                'check_in_result' => $checkInResult,
+                            ]
+                        );
+
+                        $this->setTimestamps($record, $checkedInAt ?? $createdAt, $checkedInAt ?? $createdAt);
+                    }
+                }
+            }
+        }
+    }
+
+    protected function seedHighVolumeNotifications(array $staff): void
+    {
+        $notificationTypes = [
+            'queue_alert',
+            'service_update',
+            'branch_status',
+            'daily_summary',
+            'staffing',
+            'security',
+        ];
+        $channels = [
+            NotificationChannel::InApp,
+            NotificationChannel::Push,
+            NotificationChannel::Email,
+            NotificationChannel::Sms,
+        ];
+        $staffKeys = ['admin', 'ops_manager', 'alg_manager', 'cst_manager'];
+
+        for ($index = 1; $index <= 48; $index++) {
+            $userKey = $staffKeys[$index % count($staffKeys)];
+            $type = $notificationTypes[$index % count($notificationTypes)];
+            $occurredAt = today()->copy()
+                ->subDays((int) floor(($index - 1) / 8))
+                ->setTime(8 + ($index % 9), ($index * 7) % 60);
+            $deliveryStatus = match (true) {
+                $index % 9 === 0 => NotificationDeliveryStatus::Failed,
+                $index % 4 === 0 => NotificationDeliveryStatus::Pending,
+                default => NotificationDeliveryStatus::Sent,
+            };
+            $readAt = $index % 3 === 0 ? null : $occurredAt->copy()->addMinutes(20);
+            $tone = match ($type) {
+                'queue_alert', 'branch_status' => 'warning',
+                'security' => 'critical',
+                'daily_summary' => 'success',
+                default => 'info',
+            };
+
+            $notification = Notification::query()->updateOrCreate(
+                [
+                    'user_id' => $staff[$userKey]['user']->getKey(),
+                    'notification_type' => $type,
+                    'occurred_at' => $occurredAt,
+                ],
+                [
+                    'title' => sprintf('Load test %s #%02d', str_replace('_', ' ', $type), $index),
+                    'description' => 'Synthetic notification generated to validate list rendering, unread counts, filtering, and pagination under heavier traffic.',
+                    'tone' => $tone,
+                    'action_path' => '/dashboard',
+                    'notification_channel' => $channels[$index % count($channels)],
+                    'delivery_status' => $deliveryStatus,
+                    'message_content' => sprintf('Synthetic %s notification generated for load scenario #%02d.', $type, $index),
+                    'read_at' => $readAt,
+                ]
+            );
+
+            $this->setTimestamps($notification, $occurredAt, $readAt ?? $occurredAt);
         }
     }
 
