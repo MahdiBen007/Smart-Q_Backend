@@ -1696,6 +1696,7 @@ class OperationalScenarioSeeder extends Seeder
 
     protected function seedHighVolumeCustomers(): array
     {
+        $scale = $this->loadScale();
         $firstNames = [
             'Amina', 'Yacine', 'Sofiane', 'Meriem', 'Nassim', 'Lina', 'Walid', 'Imane',
             'Adel', 'Farah', 'Nadia', 'Karim', 'Rania', 'Samir', 'Leila', 'Mourad',
@@ -1707,7 +1708,7 @@ class OperationalScenarioSeeder extends Seeder
 
         $customers = [];
 
-        for ($index = 1; $index <= 160; $index++) {
+        for ($index = 1; $index <= (160 * $scale); $index++) {
             $key = sprintf('load_customer_%03d', $index);
             $firstName = $firstNames[$index % count($firstNames)];
             $lastName = $lastNames[($index * 3) % count($lastNames)];
@@ -1754,6 +1755,7 @@ class OperationalScenarioSeeder extends Seeder
         array $staff,
         array $customers,
     ): void {
+        $scale = $this->loadScale();
         $customerKeys = array_keys($customers);
         $scenarios = [
             ['branch_key' => 'hq', 'service_key' => 'inquiry', 'staff_key' => 'hq_teller', 'time' => '09:00:00'],
@@ -1765,51 +1767,54 @@ class OperationalScenarioSeeder extends Seeder
 
         $sequence = 0;
 
-        for ($dayOffset = -30; $dayOffset <= 12; $dayOffset++) {
+        for ($dayOffset = -30; $dayOffset <= (12 + (($scale - 1) * 6)); $dayOffset++) {
             foreach ($scenarios as $scenarioIndex => $scenario) {
-                $sequence++;
-                $date = today()->copy()->addDays($dayOffset);
-                $customer = $customers[$customerKeys[$sequence % count($customerKeys)]];
+                for ($replica = 0; $replica < $scale; $replica++) {
+                    $sequence++;
+                    $date = today()->copy()->addDays($dayOffset);
+                    $customer = $customers[$customerKeys[$sequence % count($customerKeys)]];
+                    $time = $this->shiftTime($scenario['time'], $replica * 25);
 
-                $status = match (true) {
-                    $dayOffset > 0 && $sequence % 5 === 0 => AppointmentStatus::Pending,
-                    $dayOffset > 0 => AppointmentStatus::Confirmed,
-                    $dayOffset === 0 && $scenarioIndex === 0 => AppointmentStatus::Active,
-                    $dayOffset === 0 && $sequence % 4 === 0 => AppointmentStatus::Pending,
-                    $dayOffset < 0 && $sequence % 11 === 0 => AppointmentStatus::Cancelled,
-                    $dayOffset < 0 && $sequence % 7 === 0 => AppointmentStatus::NoShow,
-                    default => AppointmentStatus::Confirmed,
-                };
+                    $status = match (true) {
+                        $dayOffset > 0 && $sequence % 5 === 0 => AppointmentStatus::Pending,
+                        $dayOffset > 0 => AppointmentStatus::Confirmed,
+                        $dayOffset === 0 && $scenarioIndex === 0 => AppointmentStatus::Active,
+                        $dayOffset === 0 && $sequence % 4 === 0 => AppointmentStatus::Pending,
+                        $dayOffset < 0 && $sequence % 11 === 0 => AppointmentStatus::Cancelled,
+                        $dayOffset < 0 && $sequence % 7 === 0 => AppointmentStatus::NoShow,
+                        default => AppointmentStatus::Confirmed,
+                    };
 
-                $staffId = in_array($status, [AppointmentStatus::Pending, AppointmentStatus::Cancelled], true)
-                    ? null
-                    : ($scenario['staff_key'] ? $staff[$scenario['staff_key']]['member']->getKey() : null);
+                    $staffId = in_array($status, [AppointmentStatus::Pending, AppointmentStatus::Cancelled], true)
+                        ? null
+                        : ($scenario['staff_key'] ? $staff[$scenario['staff_key']]['member']->getKey() : null);
 
-                $appointment = Appointment::query()->updateOrCreate(
-                    [
-                        'customer_id' => $customer->getKey(),
-                        'branch_id' => $branches[$scenario['branch_key']]->getKey(),
-                        'service_id' => $services[$scenario['service_key']]->getKey(),
-                        'appointment_date' => $date->toDateString(),
-                        'appointment_time' => $scenario['time'],
-                    ],
-                    [
-                        'staff_id' => $staffId,
-                        'appointment_status' => $status,
-                    ]
-                );
+                    $appointment = Appointment::query()->updateOrCreate(
+                        [
+                            'customer_id' => $customer->getKey(),
+                            'branch_id' => $branches[$scenario['branch_key']]->getKey(),
+                            'service_id' => $services[$scenario['service_key']]->getKey(),
+                            'appointment_date' => $date->toDateString(),
+                            'appointment_time' => $time,
+                        ],
+                        [
+                            'staff_id' => $staffId,
+                            'appointment_status' => $status,
+                        ]
+                    );
 
-                $createdAt = $dayOffset >= 0
-                    ? now()->subDays(max(1, 14 - $dayOffset))->setTime(8 + ($sequence % 7), 5)
-                    : $date->copy()->subDays(2)->setTime(8 + ($sequence % 8), 15);
+                    $createdAt = $dayOffset >= 0
+                        ? now()->subDays(max(1, 14 - $dayOffset))->setTime(8 + ($sequence % 7), 5)
+                        : $date->copy()->subDays(2)->setTime(8 + ($sequence % 8), 15);
 
-                $this->setTimestamps(
-                    $appointment,
-                    $createdAt,
-                    $dayOffset > 0
-                        ? $createdAt->copy()->addHours(3)
-                        : min(now(), $createdAt->copy()->addHours(6))
-                );
+                    $this->setTimestamps(
+                        $appointment,
+                        $createdAt,
+                        $dayOffset > 0
+                            ? $createdAt->copy()->addHours(3)
+                            : min(now(), $createdAt->copy()->addHours(6))
+                    );
+                }
             }
         }
     }
@@ -1821,6 +1826,7 @@ class OperationalScenarioSeeder extends Seeder
         array $customers,
         array $kiosks,
     ): void {
+        $scale = $this->loadScale();
         $customerKeys = array_keys($customers);
         $scenarios = [
             ['branch_key' => 'hq', 'service_key' => 'inquiry', 'served_by_key' => 'hq_teller', 'kiosk_key' => 'hq_front', 'ticket_base' => 5000],
@@ -1832,7 +1838,7 @@ class OperationalScenarioSeeder extends Seeder
 
         $sequence = 0;
 
-        for ($daysBack = 0; $daysBack <= 11; $daysBack++) {
+        for ($daysBack = 0; $daysBack <= (11 + (($scale - 1) * 4)); $daysBack++) {
             $sessionDate = today()->copy()->subDays($daysBack);
 
             foreach ($scenarios as $scenarioIndex => $scenario) {
@@ -1857,7 +1863,7 @@ class OperationalScenarioSeeder extends Seeder
                     ]
                 );
 
-                for ($position = 1; $position <= 6; $position++) {
+                for ($position = 1; $position <= (6 * $scale); $position++) {
                     $sequence++;
                     $customer = $customers[$customerKeys[$sequence % count($customerKeys)]];
                     $ticketNumber = $scenario['ticket_base'] + ($daysBack * 10) + $position;
@@ -1995,6 +2001,7 @@ class OperationalScenarioSeeder extends Seeder
 
     protected function seedHighVolumeNotifications(array $staff): void
     {
+        $scale = $this->loadScale();
         $notificationTypes = [
             'queue_alert',
             'service_update',
@@ -2011,7 +2018,7 @@ class OperationalScenarioSeeder extends Seeder
         ];
         $staffKeys = ['admin', 'ops_manager', 'alg_manager', 'cst_manager'];
 
-        for ($index = 1; $index <= 48; $index++) {
+        for ($index = 1; $index <= (48 * $scale); $index++) {
             $userKey = $staffKeys[$index % count($staffKeys)];
             $type = $notificationTypes[$index % count($notificationTypes)];
             $occurredAt = today()->copy()
@@ -2050,6 +2057,18 @@ class OperationalScenarioSeeder extends Seeder
 
             $this->setTimestamps($notification, $occurredAt, $readAt ?? $occurredAt);
         }
+    }
+
+    protected function loadScale(): int
+    {
+        return max(1, (int) env('SEED_LOAD_MULTIPLIER', app()->environment('production') ? 3 : 1));
+    }
+
+    protected function shiftTime(string $time, int $minutes): string
+    {
+        return Carbon::createFromFormat('H:i:s', $time)
+            ->addMinutes($minutes)
+            ->format('H:i:s');
     }
 
     protected function syncRole(User $user, UserRoleName $role): void
