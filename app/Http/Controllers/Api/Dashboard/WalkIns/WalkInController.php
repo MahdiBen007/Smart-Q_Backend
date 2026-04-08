@@ -43,6 +43,7 @@ class WalkInController extends DashboardApiController
             'branches'
         );
         $servicesQuery = $this->scopeQueryByAssignedBranchRelation($servicesQuery, $request, 'branches');
+        $servicesQuery = $this->scopeQueryByAssignedServiceColumn($servicesQuery, $request, 'id');
         $services = $servicesQuery->get();
 
         $staffMembersQuery = $this->scopeQueryByCompanyColumn(
@@ -50,6 +51,7 @@ class WalkInController extends DashboardApiController
             $request
         );
         $staffMembersQuery = $this->scopeQueryByAssignedBranchColumn($staffMembersQuery, $request);
+        $staffMembersQuery = $this->scopeQueryByAssignedServiceColumn($staffMembersQuery, $request);
         $staffMembers = $staffMembersQuery->get();
 
         $ticketsQuery = $this->scopeQueryByCompanyRelation(
@@ -61,6 +63,7 @@ class WalkInController extends DashboardApiController
             'branch'
         );
         $ticketsQuery = $this->scopeQueryByAssignedBranchColumn($ticketsQuery, $request);
+        $ticketsQuery = $this->scopeQueryByAssignedServiceColumn($ticketsQuery, $request);
         $tickets = $ticketsQuery->get();
         $ticketIds = $tickets->pluck('id');
         $sessionsQuery = $this->scopeQueryByCompanyRelation(
@@ -72,6 +75,7 @@ class WalkInController extends DashboardApiController
             'branch'
         );
         $sessionsQuery = $this->scopeQueryByAssignedBranchRelation($sessionsQuery, $request, 'branch');
+        $sessionsQuery = $this->scopeQueryByAssignedServiceColumn($sessionsQuery, $request);
         $sessions = $sessionsQuery->get();
         $qrTokens = QrCodeToken::query()
             ->whereIn('ticket_id', $ticketIds)
@@ -186,7 +190,9 @@ class WalkInController extends DashboardApiController
     public function store(StoreWalkInRequest $request)
     {
         $branch = Branch::query()->findOrFail($request->validated('branch_id'));
+        $service = Service::query()->findOrFail($request->validated('service_id'));
         $this->ensureCompanyAccess($request, $branch);
+        $this->ensureCompanyAccess($request, $service);
 
         $created = $this->workflow->registerWalkIn($request->validated());
         $this->invalidateDashboardCache($request, $this->currentCompanyId($request));

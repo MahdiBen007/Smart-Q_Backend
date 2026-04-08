@@ -25,7 +25,10 @@ class AnalyticsController extends DashboardApiController
         $branchId = $this->shouldRestrictToAssignedBranch($request)
             ? $this->currentBranchId($request)
             : null;
-        $payload = $this->rememberScopedPayload($request, 'analytics:bootstrap', function () use ($request, $companyId, $branchId): array {
+        $serviceId = $this->shouldRestrictToAssignedService($request)
+            ? $this->currentServiceId($request)
+            : null;
+        $payload = $this->rememberScopedPayload($request, 'analytics:bootstrap', function () use ($request, $companyId, $branchId, $serviceId): array {
             $branchesQuery = $this->scopeQueryByCompanyColumn(
                 Branch::query()
                     ->select(['id', 'branch_name'])
@@ -42,7 +45,9 @@ class AnalyticsController extends DashboardApiController
                 $request,
                 'branches'
             );
-            $services = $this->scopeQueryByAssignedBranchRelation($servicesQuery, $request, 'branches')->get();
+            $servicesQuery = $this->scopeQueryByAssignedBranchRelation($servicesQuery, $request, 'branches');
+            $servicesQuery = $this->scopeQueryByAssignedServiceColumn($servicesQuery, $request, 'id');
+            $services = $servicesQuery->get();
             $staffQuery = $this->scopeQueryByCompanyColumn(
                 StaffMember::query()
                     ->select(['id', 'full_name'])
@@ -52,7 +57,9 @@ class AnalyticsController extends DashboardApiController
                     ->orderBy('full_name'),
                 $request
             );
-            $staff = $this->scopeQueryByAssignedBranchColumn($staffQuery, $request)->get();
+            $staffQuery = $this->scopeQueryByAssignedBranchColumn($staffQuery, $request);
+            $staffQuery = $this->scopeQueryByAssignedServiceColumn($staffQuery, $request);
+            $staff = $staffQuery->get();
             $branchOptions = $branches->pluck('branch_name')->values()->all();
 
             return [
@@ -76,9 +83,9 @@ class AnalyticsController extends DashboardApiController
                     'month' => 30,
                 ],
                 'trafficByRange' => [
-                    'day' => $this->trafficSeries(today(), today(), $companyId, $branchId),
-                    'week' => $this->trafficSeries(today()->subDays(6), today(), $companyId, $branchId),
-                    'month' => $this->trafficSeries(today()->subDays(29), today(), $companyId, $branchId),
+                    'day' => $this->trafficSeries(today(), today(), $companyId, $branchId, $serviceId),
+                    'week' => $this->trafficSeries(today()->subDays(6), today(), $companyId, $branchId, $serviceId),
+                    'month' => $this->trafficSeries(today()->subDays(29), today(), $companyId, $branchId, $serviceId),
                 ],
                 'baseServiceLoad' => $this->serviceLoad($services),
                 'baseLoadDistribution' => $this->loadDistribution($branches),
@@ -87,8 +94,8 @@ class AnalyticsController extends DashboardApiController
                     ->map(fn (int $offset) => today()->subDays($offset)->format('D'))
                     ->values()
                     ->all(),
-                'baseHeatmap' => $this->heatmapRows($companyId, $branchId),
-                'serviceFunnel' => $this->serviceFunnel($companyId, $branchId),
+                'baseHeatmap' => $this->heatmapRows($companyId, $branchId, $serviceId),
+                'serviceFunnel' => $this->serviceFunnel($companyId, $branchId, $serviceId),
             ];
         }, 20);
 
@@ -120,10 +127,16 @@ class AnalyticsController extends DashboardApiController
         return $profiles;
     }
 
-    protected function trafficSeries(Carbon $start, Carbon $end, ?string $companyId = null, ?string $branchId = null): array
+    protected function trafficSeries(
+        Carbon $start,
+        Carbon $end,
+        ?string $companyId = null,
+        ?string $branchId = null,
+        ?string $serviceId = null,
+    ): array
     {
-        $appointmentCounts = $this->metrics->appointmentCountsByDate($start, $end, $companyId, $branchId);
-        $walkInCounts = $this->metrics->walkInCountsByDate($start, $end, $companyId, $branchId);
+        $appointmentCounts = $this->metrics->appointmentCountsByDate($start, $end, $companyId, $branchId, $serviceId);
+        $walkInCounts = $this->metrics->walkInCountsByDate($start, $end, $companyId, $branchId, $serviceId);
         $items = [];
         $cursor = $start->copy();
 
@@ -141,15 +154,19 @@ class AnalyticsController extends DashboardApiController
         return $items;
     }
 
-    protected function heatmapRows(?string $companyId = null, ?string $branchId = null): array
+    protected function heatmapRows(
+        ?string $companyId = null,
+        ?string $branchId = null,
+        ?string $serviceId = null,
+    ): array
     {
         $startDate = today()->subDays(6);
         $endDate = today();
         $days = collect(range(6, 0))
             ->map(fn (int $offset) => today()->subDays($offset)->copy())
             ->values();
-        $appointmentCounts = $this->metrics->appointmentCountsByDateAndHour($startDate, $endDate, $companyId, $branchId);
-        $walkInCounts = $this->metrics->walkInCountsByDateAndHour($startDate, $endDate, $companyId, $branchId);
+        $appointmentCounts = $this->metrics->appointmentCountsByDateAndHour($startDate, $endDate, $companyId, $branchId, $serviceId);
+        $walkInCounts = $this->metrics->walkInCountsByDateAndHour($startDate, $endDate, $companyId, $branchId, $serviceId);
 
         return collect(range(8, 18))->map(function (int $hour) use ($days, $appointmentCounts, $walkInCounts) {
             return [
@@ -214,10 +231,19 @@ class AnalyticsController extends DashboardApiController
         })->sortByDesc('score')->take(6)->values()->all();
     }
 
-    protected function serviceFunnel(?string $companyId = null, ?string $branchId = null): array
+    protected function serviceFunnel(
+        ?string $companyId = null,
+        ?string $branchId = null,
+        ?string $serviceId = null,
+    ): array
     {
         $appointmentsQuery = Appointment::query();
         $queueEntriesQuery = QueueEntry::query();
+
+        if ($serviceId !== null) {
+            $appointmentsQuery->where('service_id', $serviceId);
+            $queueEntriesQuery->whereHas('queueSession', fn ($queueSessionQuery) => $queueSessionQuery->where('service_id', $serviceId));
+        }
 
         if ($branchId !== null) {
             $appointmentsQuery->where('branch_id', $branchId);

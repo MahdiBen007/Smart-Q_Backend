@@ -10,11 +10,11 @@ use App\Models\Branch;
 use App\Models\DailyQueueSession;
 use App\Models\QueueEntry;
 use App\Models\Service;
+use App\Support\Dashboard\BookingCodeFormatter;
 use App\Support\Dashboard\DashboardCatalog;
 use App\Support\Dashboard\DashboardFormatting;
 use App\Support\Dashboard\OperationalWorkflowService;
 use Illuminate\Http\Request;
-use Illuminate\Support\Str;
 
 class QueueMonitorController extends DashboardApiController
 {
@@ -35,6 +35,7 @@ class QueueMonitorController extends DashboardApiController
             'queueSession.branch'
         );
         $entriesQuery = $this->scopeQueryByAssignedBranchRelation($entriesQuery, $request, 'queueSession.branch');
+        $entriesQuery = $this->scopeQueryByAssignedServiceRelation($entriesQuery, $request, 'queueSession', 'service_id');
         $entries = $entriesQuery->get();
 
         $branchesQuery = $this->scopeQueryByCompanyColumn(
@@ -54,6 +55,7 @@ class QueueMonitorController extends DashboardApiController
             'branches'
         );
         $servicesQuery = $this->scopeQueryByAssignedBranchRelation($servicesQuery, $request, 'branches');
+        $servicesQuery = $this->scopeQueryByAssignedServiceColumn($servicesQuery, $request, 'id');
         $services = $servicesQuery->get();
 
         $firstSessionQuery = $this->scopeQueryByCompanyRelation(
@@ -64,6 +66,7 @@ class QueueMonitorController extends DashboardApiController
             'branch'
         );
         $firstSessionQuery = $this->scopeQueryByAssignedBranchRelation($firstSessionQuery, $request, 'branch');
+        $firstSessionQuery = $this->scopeQueryByAssignedServiceColumn($firstSessionQuery, $request);
         $firstSession = $firstSessionQuery->first();
         $serviceOptionNames = $services->pluck('service_name')->values()->all();
 
@@ -116,7 +119,9 @@ class QueueMonitorController extends DashboardApiController
     public function store(StoreQueueEntryRequest $request)
     {
         $branch = Branch::query()->findOrFail($request->validated('branch_id'));
+        $service = Service::query()->findOrFail($request->validated('service_id'));
         $this->ensureCompanyAccess($request, $branch);
+        $this->ensureCompanyAccess($request, $service);
 
         $created = $this->workflow->registerWalkIn([
             ...$request->validated(),
@@ -178,7 +183,7 @@ class QueueMonitorController extends DashboardApiController
     public function updateSessionStatus(UpdateQueueSessionStatusRequest $request)
     {
         $validated = $request->validated();
-        $session = $this->resolveSession($validated);
+        $session = $this->resolveSession($request, $validated);
         $this->ensureCompanyAccess($request, $session);
         $updated = $this->workflow->updateSessionStatus($session, $this->sessionStatusFromQueueMonitor($validated['status']));
         $this->invalidateDashboardCache($request, $session->branch?->company_id);
@@ -191,7 +196,7 @@ class QueueMonitorController extends DashboardApiController
 
     public function reset(ResolveQueueSessionRequest $request)
     {
-        $session = $this->resolveSession($request->validated());
+        $session = $this->resolveSession($request, $request->validated());
         $this->ensureCompanyAccess($request, $session);
         $affectedRows = $this->workflow->resetSession($session);
         $this->invalidateDashboardCache($request, $session->branch?->company_id);
@@ -204,7 +209,7 @@ class QueueMonitorController extends DashboardApiController
 
     public function clearWaiting(ResolveQueueSessionRequest $request)
     {
-        $session = $this->resolveSession($request->validated());
+        $session = $this->resolveSession($request, $request->validated());
         $this->ensureCompanyAccess($request, $session);
         $affectedRows = $this->workflow->clearWaitingEntries($session);
         $this->invalidateDashboardCache($request, $session->branch?->company_id);
@@ -215,16 +220,19 @@ class QueueMonitorController extends DashboardApiController
         ], 'Waiting tickets cleared successfully.');
     }
 
-    protected function resolveSession(array $validated): DailyQueueSession
+    protected function resolveSession(Request $request, array $validated): DailyQueueSession
     {
         if (! empty($validated['queue_session_id'])) {
             return DailyQueueSession::query()->findOrFail($validated['queue_session_id']);
         }
 
-        return $this->workflow->ensureSession(
-            Branch::query()->findOrFail($validated['branch_id']),
-            Service::query()->findOrFail($validated['service_id']),
-        );
+        $branch = Branch::query()->findOrFail($validated['branch_id']);
+        $service = Service::query()->findOrFail($validated['service_id']);
+
+        $this->ensureCompanyAccess($request, $branch);
+        $this->ensureCompanyAccess($request, $service);
+
+        return $this->workflow->ensureSession($branch, $service);
     }
 
     protected function queueEntryRelations(): array
@@ -243,8 +251,10 @@ class QueueMonitorController extends DashboardApiController
     protected function transformQueueEntry(QueueEntry $entry): array
     {
         $ticketId = $entry->walkInTicket
-            ? 'W-'.$entry->walkInTicket->ticket_number
-            : 'A-'.Str::upper(substr($entry->appointment_id ?? $entry->getKey(), 0, 6));
+            ? BookingCodeFormatter::walkInShortCode($entry->walkInTicket)
+            : ($entry->appointment
+                ? BookingCodeFormatter::appointmentShortCode($entry->appointment)
+                : 'A-000');
         $estimatedWait = $entry->queue_status->value === 'serving'
             ? 0
             : max(($entry->queue_position - 1) * ($entry->queueSession?->service?->average_service_duration_minutes ?? 10), 0);

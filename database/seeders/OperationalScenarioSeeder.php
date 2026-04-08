@@ -48,7 +48,7 @@ class OperationalScenarioSeeder extends Seeder
         $company = $this->seedCompany();
         $branches = $this->seedBranches($company);
         $services = $this->seedServices($branches);
-        $staff = $this->seedStaff($company, $branches);
+        $staff = $this->seedStaff($company, $branches, $services);
         $customers = $this->seedCustomers();
 
         $this->seedPreferences($staff);
@@ -270,7 +270,7 @@ class OperationalScenarioSeeder extends Seeder
         return $services;
     }
 
-    protected function seedStaff(Company $company, array $branches): array
+    protected function seedStaff(Company $company, array $branches, array $services): array
     {
         $definitions = [
             [
@@ -317,6 +317,7 @@ class OperationalScenarioSeeder extends Seeder
                 'full_name' => 'Amine Cherif',
                 'display_staff_code' => 'STF-00003',
                 'branch_key' => 'hq',
+                'service_key' => 'inquiry',
                 'role' => UserRoleName::Staff,
                 'employment_status' => EmploymentStatus::Active,
                 'is_online' => true,
@@ -341,6 +342,7 @@ class OperationalScenarioSeeder extends Seeder
                 'full_name' => 'Leila Mansouri',
                 'display_staff_code' => 'STF-00005',
                 'branch_key' => 'alg',
+                'service_key' => 'cash',
                 'role' => UserRoleName::Staff,
                 'employment_status' => EmploymentStatus::Active,
                 'is_online' => false,
@@ -377,6 +379,7 @@ class OperationalScenarioSeeder extends Seeder
                 'full_name' => 'Walid Kaci',
                 'display_staff_code' => 'STF-00008',
                 'branch_key' => 'cst',
+                'service_key' => 'business',
                 'role' => UserRoleName::Staff,
                 'employment_status' => EmploymentStatus::Active,
                 'is_online' => true,
@@ -389,6 +392,7 @@ class OperationalScenarioSeeder extends Seeder
                 'full_name' => 'Moumen SmartQ',
                 'display_staff_code' => 'STF-00010',
                 'branch_key' => 'hq',
+                'service_key' => 'onboarding',
                 'role' => UserRoleName::Staff,
                 'employment_status' => EmploymentStatus::Active,
                 'is_online' => true,
@@ -430,6 +434,9 @@ class OperationalScenarioSeeder extends Seeder
                 [
                     'company_id' => $company->getKey(),
                     'branch_id' => $branch->getKey(),
+                    'service_id' => isset($definition['service_key'])
+                        ? $services[$definition['service_key']]->getKey()
+                        : null,
                     'full_name' => $definition['full_name'],
                     'display_staff_code' => $definition['display_staff_code'],
                     'employment_status' => $definition['employment_status'],

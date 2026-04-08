@@ -48,7 +48,7 @@ class SettingsController extends DashboardApiController
     {
         return [
             'appearance' => [
-                'theme' => 'system',
+                'theme' => 'light',
                 'language' => 'en',
                 'density' => 'comfortable',
                 'reducedMotion' => false,

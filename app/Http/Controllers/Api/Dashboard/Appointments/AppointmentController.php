@@ -14,6 +14,7 @@ use App\Models\Branch;
 use App\Models\QrCodeToken;
 use App\Models\QueueEntry;
 use App\Models\Service;
+use App\Support\Dashboard\BookingCodeFormatter;
 use App\Support\Dashboard\DashboardFormatting;
 use App\Support\Dashboard\OperationalWorkflowService;
 use Illuminate\Database\Eloquent\Builder;
@@ -182,7 +183,9 @@ class AppointmentController extends DashboardApiController
             'branch'
         );
 
-        return $this->scopeQueryByAssignedBranchColumn($query, $request);
+        $query = $this->scopeQueryByAssignedBranchColumn($query, $request);
+
+        return $this->scopeQueryByAssignedServiceColumn($query, $request);
     }
 
     protected function appointmentRelations(): array
@@ -299,10 +302,15 @@ class AppointmentController extends DashboardApiController
         }
 
         return $query
-            ->select('appointments.id')
             ->get()
+            ->filter(function (Appointment $appointment) use ($normalizedSearch): bool {
+                $displayCode = strtoupper($this->appointmentDisplayId($appointment));
+                $shortCode = strtoupper(BookingCodeFormatter::appointmentShortCode($appointment));
+
+                return str_contains($displayCode, $normalizedSearch)
+                    || str_contains($shortCode, $normalizedSearch);
+            })
             ->pluck('id')
-            ->filter(fn ($appointmentId) => str_contains($this->appointmentDisplayId((string) $appointmentId), $normalizedSearch))
             ->values()
             ->all();
     }
@@ -329,9 +337,10 @@ class AppointmentController extends DashboardApiController
         $query = $this->scopeQueryByCompanyRelation(
             Service::query()->orderBy('service_name'),
             $request,
-            'branch'
+            'branches'
         );
-        $query = $this->scopeQueryByAssignedBranchRelation($query, $request, 'branch');
+        $query = $this->scopeQueryByAssignedBranchRelation($query, $request, 'branches');
+        $query = $this->scopeQueryByAssignedServiceColumn($query, $request, 'id');
 
         return $query->get(['id', 'service_name'])
             ->unique('id')
@@ -456,17 +465,9 @@ class AppointmentController extends DashboardApiController
         };
     }
 
-    protected function appointmentDisplayId(string $appointmentId): string
+    protected function appointmentDisplayId(Appointment $appointment): string
     {
-        $hash = 0;
-
-        foreach (str_split($appointmentId) as $character) {
-            $hash = (($hash * 31) + ord($character)) & 0xFFFFFFFF;
-        }
-
-        $number = 100000 + ($hash % 900000);
-
-        return 'APT-'.str_pad((string) $number, 6, '0', STR_PAD_LEFT);
+        return BookingCodeFormatter::appointmentDisplayCode($appointment);
     }
 
     protected function transformAppointment(Appointment $appointment): array
@@ -498,7 +499,7 @@ class AppointmentController extends DashboardApiController
 
         return [
             'id' => $appointment->getKey(),
-            'displayId' => $this->appointmentDisplayId((string) $appointment->getKey()),
+            'displayId' => $this->appointmentDisplayId($appointment),
             'branchId' => $appointment->branch_id,
             'serviceId' => $appointment->service_id,
             'customerName' => $appointment->customer?->full_name ?? 'Unknown Customer',

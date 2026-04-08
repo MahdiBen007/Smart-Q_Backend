@@ -75,6 +75,7 @@ class LayoutController extends DashboardApiController
             'branch'
         );
         $bookingsQuery = $this->scopeQueryByAssignedBranchColumn($bookingsQuery, $request);
+        $bookingsQuery = $this->scopeQueryByAssignedServiceColumn($bookingsQuery, $request);
 
         $bookings = $bookingsQuery->get()
             ->map(fn (Appointment $appointment) => $this->transformBooking($appointment))

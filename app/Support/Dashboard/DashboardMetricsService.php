@@ -9,13 +9,23 @@ use Illuminate\Support\Carbon;
 
 class DashboardMetricsService
 {
-    public function appointmentCountsByDate(Carbon $startDate, Carbon $endDate, ?string $companyId = null, ?string $branchId = null): array
+    public function appointmentCountsByDate(
+        Carbon $startDate,
+        Carbon $endDate,
+        ?string $companyId = null,
+        ?string $branchId = null,
+        ?string $serviceId = null,
+    ): array
     {
         $query = Appointment::query()
             ->selectRaw('appointment_date as metric_date, COUNT(*) as aggregate_count')
             ->whereBetween('appointment_date', [$startDate->toDateString(), $endDate->toDateString()])
             ->groupBy('metric_date');
 
+        if ($serviceId !== null) {
+            $query->where('service_id', $serviceId);
+        }
+
         if ($branchId !== null) {
             $query->where('branch_id', $branchId);
         } elseif ($companyId !== null) {
@@ -28,13 +38,23 @@ class DashboardMetricsService
             ->all();
     }
 
-    public function walkInCountsByDate(Carbon $startDate, Carbon $endDate, ?string $companyId = null, ?string $branchId = null): array
+    public function walkInCountsByDate(
+        Carbon $startDate,
+        Carbon $endDate,
+        ?string $companyId = null,
+        ?string $branchId = null,
+        ?string $serviceId = null,
+    ): array
     {
         $query = WalkInTicket::query()
             ->selectRaw('DATE(created_at) as metric_date, COUNT(*) as aggregate_count')
             ->whereBetween('created_at', [$startDate->copy()->startOfDay(), $endDate->copy()->endOfDay()])
             ->groupBy('metric_date');
 
+        if ($serviceId !== null) {
+            $query->where('service_id', $serviceId);
+        }
+
         if ($branchId !== null) {
             $query->where('branch_id', $branchId);
         } elseif ($companyId !== null) {
@@ -47,7 +67,13 @@ class DashboardMetricsService
             ->all();
     }
 
-    public function appointmentCountsByDateAndHour(Carbon $startDate, Carbon $endDate, ?string $companyId = null, ?string $branchId = null): array
+    public function appointmentCountsByDateAndHour(
+        Carbon $startDate,
+        Carbon $endDate,
+        ?string $companyId = null,
+        ?string $branchId = null,
+        ?string $serviceId = null,
+    ): array
     {
         $query = Appointment::query()
             ->selectRaw('appointment_date as metric_date, HOUR(appointment_time) as metric_hour, COUNT(*) as aggregate_count')
@@ -55,6 +81,10 @@ class DashboardMetricsService
             ->whereNotNull('appointment_time')
             ->groupBy('metric_date', 'metric_hour');
 
+        if ($serviceId !== null) {
+            $query->where('service_id', $serviceId);
+        }
+
         if ($branchId !== null) {
             $query->where('branch_id', $branchId);
         } elseif ($companyId !== null) {
@@ -69,13 +99,23 @@ class DashboardMetricsService
             ->all();
     }
 
-    public function walkInCountsByDateAndHour(Carbon $startDate, Carbon $endDate, ?string $companyId = null, ?string $branchId = null): array
+    public function walkInCountsByDateAndHour(
+        Carbon $startDate,
+        Carbon $endDate,
+        ?string $companyId = null,
+        ?string $branchId = null,
+        ?string $serviceId = null,
+    ): array
     {
         $query = WalkInTicket::query()
             ->selectRaw('DATE(created_at) as metric_date, HOUR(created_at) as metric_hour, COUNT(*) as aggregate_count')
             ->whereBetween('created_at', [$startDate->copy()->startOfDay(), $endDate->copy()->endOfDay()])
             ->groupBy('metric_date', 'metric_hour');
 
+        if ($serviceId !== null) {
+            $query->where('service_id', $serviceId);
+        }
+
         if ($branchId !== null) {
             $query->where('branch_id', $branchId);
         } elseif ($companyId !== null) {
@@ -90,12 +130,22 @@ class DashboardMetricsService
             ->all();
     }
 
-    public function queueActivityCountsByDate(Carbon $startDate, Carbon $endDate, ?string $companyId = null, ?string $branchId = null): array
+    public function queueActivityCountsByDate(
+        Carbon $startDate,
+        Carbon $endDate,
+        ?string $companyId = null,
+        ?string $branchId = null,
+        ?string $serviceId = null,
+    ): array
     {
         $query = QueueEntry::query()
             ->selectRaw('DATE(updated_at) as metric_date, COUNT(*) as aggregate_count')
             ->whereBetween('updated_at', [$startDate->copy()->startOfDay(), $endDate->copy()->endOfDay()])
             ->groupBy('metric_date');
+
+        if ($serviceId !== null) {
+            $query->whereHas('queueSession', fn ($queueSessionQuery) => $queueSessionQuery->where('service_id', $serviceId));
+        }
 
         if ($branchId !== null) {
             $query->whereHas('queueSession', fn ($queueSessionQuery) => $queueSessionQuery->where('branch_id', $branchId));
@@ -109,12 +159,21 @@ class DashboardMetricsService
             ->all();
     }
 
-    public function queueActivityCountsByHour(Carbon $date, ?string $companyId = null, ?string $branchId = null): array
+    public function queueActivityCountsByHour(
+        Carbon $date,
+        ?string $companyId = null,
+        ?string $branchId = null,
+        ?string $serviceId = null,
+    ): array
     {
         $query = QueueEntry::query()
             ->selectRaw('HOUR(updated_at) as metric_hour, COUNT(*) as aggregate_count')
             ->whereBetween('updated_at', [$date->copy()->startOfDay(), $date->copy()->endOfDay()])
             ->groupBy('metric_hour');
+
+        if ($serviceId !== null) {
+            $query->whereHas('queueSession', fn ($queueSessionQuery) => $queueSessionQuery->where('service_id', $serviceId));
+        }
 
         if ($branchId !== null) {
             $query->whereHas('queueSession', fn ($queueSessionQuery) => $queueSessionQuery->where('branch_id', $branchId));
@@ -128,7 +187,12 @@ class DashboardMetricsService
             ->all();
     }
 
-    public function averageWaitMinutes(Carbon $date, ?string $companyId = null, ?string $branchId = null): int
+    public function averageWaitMinutes(
+        Carbon $date,
+        ?string $companyId = null,
+        ?string $branchId = null,
+        ?string $serviceId = null,
+    ): int
     {
         $query = QueueEntry::query()
             ->join('daily_queue_sessions', 'daily_queue_sessions.id', '=', 'queue_entries.queue_session_id')
@@ -140,6 +204,10 @@ class DashboardMetricsService
                 'THEN (queue_entries.queue_position - 1) * COALESCE(services.average_service_duration_minutes, 10) '.
                 'ELSE 0 END) as aggregate_wait'
             );
+
+        if ($serviceId !== null) {
+            $query->where('daily_queue_sessions.service_id', $serviceId);
+        }
 
         if ($branchId !== null) {
             $query->where('daily_queue_sessions.branch_id', $branchId);

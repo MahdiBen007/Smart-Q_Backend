@@ -93,6 +93,11 @@ abstract class DashboardApiController extends Controller
         return $request?->user()?->staffMember?->branch_id;
     }
 
+    protected function currentServiceId(?Request $request = null): ?string
+    {
+        return $request?->user()?->staffMember?->service_id;
+    }
+
     protected function currentRoleNames(?Request $request = null): array
     {
         /** @var User|null $user */
@@ -126,6 +131,11 @@ abstract class DashboardApiController extends Controller
     protected function shouldRestrictToAssignedBranch(?Request $request = null): bool
     {
         return ! $this->isDashboardAdmin($request) && $this->currentBranchId($request) !== null;
+    }
+
+    protected function shouldRestrictToAssignedService(?Request $request = null): bool
+    {
+        return ! $this->isDashboardAdmin($request) && $this->currentServiceId($request) !== null;
     }
 
     protected function scopeQueryByCompanyColumn(
@@ -186,6 +196,35 @@ abstract class DashboardApiController extends Controller
         return $query->whereHas($relation, fn (Builder $relationQuery) => $relationQuery->where($column, $branchId));
     }
 
+    protected function scopeQueryByAssignedServiceColumn(
+        Builder $query,
+        Request $request,
+        string $column = 'service_id',
+    ): Builder {
+        $serviceId = $this->currentServiceId($request);
+
+        if (! $this->shouldRestrictToAssignedService($request) || $serviceId === null) {
+            return $query;
+        }
+
+        return $query->where($column, $serviceId);
+    }
+
+    protected function scopeQueryByAssignedServiceRelation(
+        Builder $query,
+        Request $request,
+        string $relation,
+        string $column = 'id',
+    ): Builder {
+        $serviceId = $this->currentServiceId($request);
+
+        if (! $this->shouldRestrictToAssignedService($request) || $serviceId === null) {
+            return $query;
+        }
+
+        return $query->whereHas($relation, fn (Builder $relationQuery) => $relationQuery->where($column, $serviceId));
+    }
+
     protected function ensureCompanyAccess(Request $request, Model $model): void
     {
         $companyId = $this->currentCompanyId($request);
@@ -227,6 +266,24 @@ abstract class DashboardApiController extends Controller
         };
 
         abort_unless($hasBranchAccess, 404);
+
+        $serviceId = $this->currentServiceId($request);
+
+        if (! $this->shouldRestrictToAssignedService($request) || $serviceId === null) {
+            return;
+        }
+
+        $hasServiceAccess = match (true) {
+            $model instanceof Service => $model->getKey() === $serviceId,
+            $model instanceof StaffMember => $model->service_id === null || $model->service_id === $serviceId,
+            $model instanceof Appointment => $model->service_id === $serviceId,
+            $model instanceof WalkInTicket => $model->service_id === $serviceId,
+            $model instanceof DailyQueueSession => $model->service_id === $serviceId,
+            $model instanceof QueueEntry => $model->queueSession?->service_id === $serviceId,
+            default => true,
+        };
+
+        abort_unless($hasServiceAccess, 404);
     }
 
     protected function respondIndexCollection(

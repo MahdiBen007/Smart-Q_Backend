@@ -9,6 +9,7 @@ use App\Models\Branch;
 use App\Models\QueueEntry;
 use App\Models\StaffMember;
 use App\Models\WalkInTicket;
+use App\Support\Dashboard\BookingCodeFormatter;
 use App\Support\Dashboard\DashboardFormatting;
 use App\Support\Dashboard\DashboardMetricsService;
 use Illuminate\Http\Request;
@@ -23,10 +24,15 @@ class DashboardController extends DashboardApiController
     public function kpis(Request $request)
     {
         $companyId = $this->currentCompanyId($request);
-        $payload = $this->rememberScopedPayload($request, 'dashboard:kpis', function () use ($request, $companyId): array {
+        $serviceId = $this->shouldRestrictToAssignedService($request)
+            ? $this->currentServiceId($request)
+            : null;
+        $payload = $this->rememberScopedPayload($request, 'dashboard:kpis', function () use ($request, $companyId, $serviceId): array {
             $appointmentsQuery = $this->scopeQueryByCompanyRelation(Appointment::query(), $request, 'branch');
             $walkInsQuery = $this->scopeQueryByCompanyRelation(WalkInTicket::query(), $request, 'branch');
             $branchesQuery = $this->scopeQueryByCompanyColumn(Branch::query(), $request);
+            $appointmentsQuery = $this->scopeQueryByAssignedServiceColumn($appointmentsQuery, $request);
+            $walkInsQuery = $this->scopeQueryByAssignedServiceColumn($walkInsQuery, $request);
 
             $todayAppointments = (clone $appointmentsQuery)
                 ->whereDate('appointment_date', today())
@@ -44,8 +50,8 @@ class DashboardController extends DashboardApiController
                 ->where('branch_status', 'active')
                 ->count();
             $totalBranches = max((clone $branchesQuery)->count(), 1);
-            $avgWaitToday = $this->metrics->averageWaitMinutes(today(), $companyId);
-            $avgWaitYesterday = $this->metrics->averageWaitMinutes(today()->copy()->subDay(), $companyId);
+            $avgWaitToday = $this->metrics->averageWaitMinutes(today(), $companyId, serviceId: $serviceId);
+            $avgWaitYesterday = $this->metrics->averageWaitMinutes(today()->copy()->subDay(), $companyId, serviceId: $serviceId);
 
             return [
                 $this->buildKpi('Appointments Today', $todayAppointments, $yesterdayAppointments, 'CalendarDays', 'Today', 'info', 'primary'),
@@ -88,9 +94,12 @@ class DashboardController extends DashboardApiController
         };
         $cacheKey = sprintf('dashboard:dashboard:traffic:%s:%s', $range, $startDate->toDateString());
         $companyId = $this->currentCompanyId($request);
-        $payload = $this->rememberScopedPayload($request, $cacheKey, function () use ($startDate, $companyId): array {
-            $appointmentCounts = $this->metrics->appointmentCountsByDate($startDate, today(), $companyId);
-            $walkInCounts = $this->metrics->walkInCountsByDate($startDate, today(), $companyId);
+        $serviceId = $this->shouldRestrictToAssignedService($request)
+            ? $this->currentServiceId($request)
+            : null;
+        $payload = $this->rememberScopedPayload($request, $cacheKey, function () use ($startDate, $companyId, $serviceId): array {
+            $appointmentCounts = $this->metrics->appointmentCountsByDate($startDate, today(), $companyId, serviceId: $serviceId);
+            $walkInCounts = $this->metrics->walkInCountsByDate($startDate, today(), $companyId, serviceId: $serviceId);
             $dates = collect();
             $cursor = $startDate->copy();
 
@@ -146,6 +155,7 @@ class DashboardController extends DashboardApiController
             $request,
             'queueSession.branch'
         );
+        $entryQuery = $this->scopeQueryByAssignedServiceRelation($entryQuery, $request, 'queueSession', 'service_id');
         $entry = $entryQuery->first();
 
         if (! $entry) {
@@ -176,7 +186,11 @@ class DashboardController extends DashboardApiController
         $branch = $entry->queueSession?->branch
             ?? $entry->appointment?->branch
             ?? $entry->walkInTicket?->branch;
-        $ticketNumber = $entry->walkInTicket?->ticket_number ?? $entry->queue_position;
+        $ticketNumber = $entry->walkInTicket
+            ? (int) $entry->walkInTicket->ticket_number
+            : ($entry->appointment
+                ? BookingCodeFormatter::appointmentReferenceNumber((string) $entry->appointment->getKey())
+                : $entry->queue_position);
         $serviceDurationMinutes = max((int) ($service?->average_service_duration_minutes ?? 10), 1);
         $estimatedWait = $entry->queue_status->value === QueueEntryStatus::Serving->value
             ? 0
@@ -202,7 +216,11 @@ class DashboardController extends DashboardApiController
     public function queuePerformance(Request $request)
     {
         $companyId = $this->currentCompanyId($request);
+        $serviceId = $this->shouldRestrictToAssignedService($request)
+            ? $this->currentServiceId($request)
+            : null;
         $servedBaseQuery = $this->scopeQueryByCompanyRelation(QueueEntry::query(), $request, 'queueSession.branch');
+        $servedBaseQuery = $this->scopeQueryByAssignedServiceRelation($servedBaseQuery, $request, 'queueSession', 'service_id');
         $servedCount = (clone $servedBaseQuery)
             ->where('queue_status', 'completed')
             ->whereDate('updated_at', today())
@@ -211,16 +229,16 @@ class DashboardController extends DashboardApiController
             ->where('queue_status', 'cancelled')
             ->whereDate('updated_at', today())
             ->count();
-        $avgWaitToday = $this->metrics->averageWaitMinutes(today(), $companyId);
-        $avgWaitYesterday = $this->metrics->averageWaitMinutes(today()->copy()->subDay(), $companyId);
+        $avgWaitToday = $this->metrics->averageWaitMinutes(today(), $companyId, serviceId: $serviceId);
+        $avgWaitYesterday = $this->metrics->averageWaitMinutes(today()->copy()->subDay(), $companyId, serviceId: $serviceId);
         $efficiencyPercent = max(0, min(100, (int) round(($servedCount / max($servedCount + $cancelledCount, 1)) * 100)));
-        $heatmap = $this->queuePerformanceHeatmap($companyId);
+        $heatmap = $this->queuePerformanceHeatmap($companyId, serviceId: $serviceId);
 
         return $this->respond([
             'lastUpdatedLabel' => now()->format('h:i A'),
             'avgWaitTimeLabel' => $avgWaitToday.'m',
             'avgWaitChangeLabel' => $this->changeLabel($avgWaitToday, $avgWaitYesterday, inverse: true),
-            'avgWaitTrend' => $this->queuePerformanceTrend($companyId),
+            'avgWaitTrend' => $this->queuePerformanceTrend($companyId, serviceId: $serviceId),
             'efficiencyPercent' => $efficiencyPercent,
             'servedCount' => $servedCount,
             'cancelledCount' => $cancelledCount,
@@ -276,29 +294,42 @@ class DashboardController extends DashboardApiController
         return ($delta >= 0 ? '+' : '').$delta.'%';
     }
 
-    protected function averageWaitMinutes(Carbon $date, ?string $companyId = null, ?string $branchId = null): int
+    protected function averageWaitMinutes(
+        Carbon $date,
+        ?string $companyId = null,
+        ?string $branchId = null,
+        ?string $serviceId = null,
+    ): int
     {
-        return $this->metrics->averageWaitMinutes($date, $companyId, $branchId);
+        return $this->metrics->averageWaitMinutes($date, $companyId, $branchId, $serviceId);
     }
 
-    protected function queuePerformanceTrend(?string $companyId = null, ?string $branchId = null): array
+    protected function queuePerformanceTrend(
+        ?string $companyId = null,
+        ?string $branchId = null,
+        ?string $serviceId = null,
+    ): array
     {
         return collect(range(4, 0))
-            ->map(function (int $offset) use ($companyId, $branchId) {
+            ->map(function (int $offset) use ($companyId, $branchId, $serviceId) {
                 $date = today()->copy()->subDays($offset);
 
                 return [
                     'label' => $date->format('M d'),
-                    'value' => $this->averageWaitMinutes($date, $companyId, $branchId),
+                    'value' => $this->averageWaitMinutes($date, $companyId, $branchId, $serviceId),
                 ];
             })
             ->all();
     }
 
-    protected function queuePerformanceHeatmap(?string $companyId = null, ?string $branchId = null): array
+    protected function queuePerformanceHeatmap(
+        ?string $companyId = null,
+        ?string $branchId = null,
+        ?string $serviceId = null,
+    ): array
     {
         $hours = range(8, 18);
-        $counts = $this->metrics->queueActivityCountsByHour(today(), $companyId, $branchId);
+        $counts = $this->metrics->queueActivityCountsByHour(today(), $companyId, $branchId, $serviceId);
         $maxCount = max(collect($hours)->map(fn (int $hour) => $counts[$hour] ?? 0)->all()) ?: 0;
         $peakHour = collect($hours)
             ->sortByDesc(fn (int $hour) => $counts[$hour] ?? 0)
@@ -352,6 +383,7 @@ class DashboardController extends DashboardApiController
                 ->limit(5),
             $request
         );
+        $query = $this->scopeQueryByAssignedServiceColumn($query, $request);
 
         return $query->get()
             ->map(function (StaffMember $staff) {
@@ -410,6 +442,7 @@ class DashboardController extends DashboardApiController
             $request,
             'queueSession.branch'
         );
+        $query = $this->scopeQueryByAssignedServiceRelation($query, $request, 'queueSession', 'service_id');
 
         return $query->get()
             ->map(function (QueueEntry $entry) {
