@@ -14,6 +14,10 @@ class DatabaseSeeder extends Seeder
      */
     public function run(): void
     {
+        if (! (bool) env('SEED_OPERATIONAL_SCENARIO', false)) {
+            return;
+        }
+
         $this->call([
             OperationalScenarioSeeder::class,
         ]);
