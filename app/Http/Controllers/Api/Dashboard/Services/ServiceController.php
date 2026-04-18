@@ -18,9 +18,19 @@ class ServiceController extends DashboardApiController
 {
     public function bootstrap(ListServicesRequest $request)
     {
+        $today = now()->toDateString();
         $services = $this->applyFilters($this->baseQuery($request), $request)->get();
         $branches = $this->scopeQueryByCompanyColumn(
-            Branch::query()->with(['dailyQueueSessions.queueEntries'])->orderBy('branch_name'),
+            Branch::query()
+                ->select(['id', 'branch_name', 'branch_code', 'branch_status'])
+                ->with([
+                    'dailyQueueSessions' => fn ($query) => $query
+                        ->select(['id', 'branch_id', 'session_date'])
+                        ->whereDate('session_date', $today),
+                    'dailyQueueSessions.queueEntries' => fn ($query) => $query
+                        ->select(['id', 'queue_session_id', 'queue_position', 'queue_status']),
+                ])
+                ->orderBy('branch_name'),
             $request
         )->get();
 
@@ -108,11 +118,18 @@ class ServiceController extends DashboardApiController
 
     protected function serviceRelations(): array
     {
+        $today = now()->toDateString();
+
         return [
-            'branches.dailyQueueSessions.queueEntries',
-            'walkInTickets',
-            'appointments',
-            'dailyQueueSessions.queueEntries',
+            'branches:id,branch_name',
+            'walkInTickets' => fn ($query) => $query
+                ->select(['id', 'service_id', 'created_at'])
+                ->whereDate('created_at', $today),
+            'dailyQueueSessions' => fn ($query) => $query
+                ->select(['id', 'service_id', 'session_date'])
+                ->whereDate('session_date', $today),
+            'dailyQueueSessions.queueEntries' => fn ($query) => $query
+                ->select(['id', 'queue_session_id', 'queue_position', 'queue_status']),
         ];
     }
 

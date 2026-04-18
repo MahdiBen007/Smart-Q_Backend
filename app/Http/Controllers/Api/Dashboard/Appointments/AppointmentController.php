@@ -107,6 +107,40 @@ class AppointmentController extends DashboardApiController
         ], 'Appointment checked in successfully.');
     }
 
+    public function simulateCheckIn(ListAppointmentsRequest $request, Appointment $appointment)
+    {
+        $this->ensureCompanyAccess($request, $appointment);
+
+        $activeQrToken = QrCodeToken::query()
+            ->where('appointment_id', $appointment->getKey())
+            ->where('token_status', TokenStatus::Active->value)
+            ->latest('created_at')
+            ->first();
+
+        if (! $activeQrToken) {
+            return $this->respond(
+                ['errors' => ['appointment' => ['This appointment cannot be checked in right now.']]],
+                'No active QR token is available for this appointment.',
+                422
+            );
+        }
+
+        $result = $this->workflow->checkInAppointmentToken(
+            $activeQrToken->token_value,
+            null,
+            CheckInResult::Success->value,
+        );
+
+        $nextAppointment = $result['appointment']->loadMissing($this->appointmentRelations());
+        $this->ensureCompanyAccess($request, $nextAppointment);
+        $this->invalidateDashboardCache($request, $nextAppointment->branch?->company_id);
+
+        return $this->respond(
+            $this->transformAppointment($nextAppointment),
+            'Appointment check-in simulated successfully.'
+        );
+    }
+
     public function markNoShow(Appointment $appointment)
     {
         $request = request();
@@ -151,6 +185,30 @@ class AppointmentController extends DashboardApiController
         );
     }
 
+    public function destroy(ListAppointmentsRequest $request, Appointment $appointment)
+    {
+        $this->ensureCompanyAccess($request, $appointment);
+        $companyId = $appointment->branch?->company_id;
+
+        $this->workflow->cancelAppointmentQueueEntries($appointment);
+        $appointment->qrCodeTokens()
+            ->where('token_status', TokenStatus::Active->value)
+            ->update([
+                'token_status' => TokenStatus::Expired,
+            ]);
+
+        $deletedId = $appointment->getKey();
+        // Keep relational history (check-ins/QR tokens) intact; hard delete can
+        // violate FK constraints when check_in_records reference qr_code_tokens.
+        $appointment->delete();
+        $this->invalidateDashboardCache($request, $companyId);
+
+        return $this->respond([
+            'id' => $deletedId,
+            'deleted' => true,
+        ], 'Appointment deleted successfully.');
+    }
+
     protected function baseQuery(ListAppointmentsRequest $request): Builder
     {
         $today = now()->toDateString();
@@ -192,13 +250,16 @@ class AppointmentController extends DashboardApiController
     {
         return [
             'customer' => fn ($query) => $query
-                ->select(['id', 'full_name', 'email_address', 'phone_number'])
+                ->select(['id', 'user_id', 'full_name', 'email_address', 'phone_number'])
+                ->with('user:id,user_type')
                 ->withCount('appointments')
                 ->withCount([
                     'appointments as no_show_appointments_count' => fn ($appointmentQuery) => $appointmentQuery
                         ->where('appointment_status', AppointmentStatus::NoShow->value),
                 ]),
-            'branch:id,branch_name',
+            'branch' => fn ($query) => $query
+                ->select(['id', 'company_id', 'branch_name'])
+                ->with('company:id,company_name'),
             'service:id,service_name,average_service_duration_minutes',
             'staffMember:id,full_name',
             'qrCodeTokens' => fn ($query) => $query
@@ -229,7 +290,14 @@ class AppointmentController extends DashboardApiController
         }
 
         if (is_string($status) && $status !== '') {
-            $query->where('appointment_status', $this->appointmentStatusValue($status));
+            if ($status === 'Completed') {
+                $query->whereHas(
+                    'queueEntries',
+                    fn (Builder $queueQuery) => $queueQuery->where('queue_status', QueueEntryStatus::Completed->value)
+                );
+            } else {
+                $query->where('appointment_status', $this->appointmentStatusValue($status));
+            }
         }
 
         if (is_string($dateFrom) && $dateFrom !== '') {
@@ -244,18 +312,14 @@ class AppointmentController extends DashboardApiController
             match ($queueState) {
                 'Checked In' => $query->whereHas(
                     'queueEntries',
-                    fn (Builder $queueQuery) => $this->applyActiveQueueConstraint($queueQuery)
+                    fn (Builder $queueQuery) => $this->applyCheckedInQueueConstraint($queueQuery)
                 ),
                 'Expired' => $query
-                    ->whereDoesntHave(
-                        'queueEntries',
-                        fn (Builder $queueQuery) => $this->applyActiveQueueConstraint($queueQuery)
-                    )
                     ->where(fn (Builder $expiredQuery) => $this->applyExpiredAppointmentConstraint($expiredQuery)),
                 'Awaiting Check-In', 'Not Queued' => $query
                     ->whereDoesntHave(
                         'queueEntries',
-                        fn (Builder $queueQuery) => $this->applyActiveQueueConstraint($queueQuery)
+                        fn (Builder $queueQuery) => $this->applyCheckedInQueueConstraint($queueQuery)
                     )
                     ->where(fn (Builder $upcomingQuery) => $this->applyNotExpiredAppointmentConstraint($upcomingQuery)),
             };
@@ -294,25 +358,42 @@ class AppointmentController extends DashboardApiController
     {
         $normalizedSearch = strtoupper(str_replace(' ', '', $search));
 
-        if (
-            $normalizedSearch === ''
-            || (! str_starts_with($normalizedSearch, 'APT') && ! preg_match('/^\d+$/', $normalizedSearch))
-        ) {
+        if ($normalizedSearch === '') {
             return [];
         }
 
-        return $query
-            ->get()
-            ->filter(function (Appointment $appointment) use ($normalizedSearch): bool {
-                $displayCode = strtoupper($this->appointmentDisplayId($appointment));
-                $shortCode = strtoupper(BookingCodeFormatter::appointmentShortCode($appointment));
+        $matchedIds = [];
 
-                return str_contains($displayCode, $normalizedSearch)
-                    || str_contains($shortCode, $normalizedSearch);
-            })
-            ->pluck('id')
-            ->values()
-            ->all();
+        (clone $query)
+            ->select([
+                'appointments.id',
+                'appointments.customer_id',
+                'appointments.branch_id',
+                'appointments.service_id',
+                'appointments.appointment_date',
+            ])
+            ->with([
+                'customer:id,user_id',
+                'customer.user:id,user_type',
+                'branch:id,company_id,branch_name',
+                'branch.company:id,company_name',
+                'service:id,service_name',
+            ])
+            ->chunk(200, function ($appointments) use (&$matchedIds, $normalizedSearch): void {
+                foreach ($appointments as $appointment) {
+                    $displayCode = strtoupper(str_replace(' ', '', $this->appointmentDisplayId($appointment)));
+                    $shortCode = strtoupper(str_replace(' ', '', BookingCodeFormatter::appointmentShortCode($appointment)));
+
+                    if (
+                        str_contains($displayCode, $normalizedSearch)
+                        || str_contains($shortCode, $normalizedSearch)
+                    ) {
+                        $matchedIds[] = $appointment->getKey();
+                    }
+                }
+            });
+
+        return $matchedIds;
     }
 
     protected function branchOptions(ListAppointmentsRequest $request): array
@@ -364,7 +445,7 @@ class AppointmentController extends DashboardApiController
         $checkedInCount = (clone $query)
             ->whereHas(
                 'queueEntries',
-                fn (Builder $queueQuery) => $queueQuery->whereNotIn('queue_status', ['completed', 'cancelled'])
+                fn (Builder $queueQuery) => $this->applyCheckedInQueueConstraint($queueQuery)
             )
             ->count();
 
@@ -395,14 +476,21 @@ class AppointmentController extends DashboardApiController
         ]);
     }
 
+    protected function applyCheckedInQueueConstraint(Builder $query): void
+    {
+        $this->applyActiveQueueConstraint($query);
+        $query->whereNotNull('checked_in_at');
+    }
+
     protected function applyExpiredAppointmentConstraint(Builder $query): void
     {
         $now = now();
-        $today = $now->toDateString();
+        $today = now()->toDateString();
         $currentTime = $now->format('H:i:s');
 
         $query
             ->where('appointment_status', AppointmentStatus::NoShow->value)
+            ->orWhere('appointment_status', AppointmentStatus::Cancelled->value)
             ->orWhereDate('appointment_date', '<', $today)
             ->orWhere(function (Builder $sameDayQuery) use ($today, $currentTime): void {
                 $sameDayQuery
@@ -415,11 +503,14 @@ class AppointmentController extends DashboardApiController
     protected function applyNotExpiredAppointmentConstraint(Builder $query): void
     {
         $now = now();
-        $today = $now->toDateString();
+        $today = now()->toDateString();
         $currentTime = $now->format('H:i:s');
 
         $query
-            ->where('appointment_status', '!=', AppointmentStatus::NoShow->value)
+            ->whereNotIn('appointment_status', [
+                AppointmentStatus::NoShow->value,
+                AppointmentStatus::Cancelled->value,
+            ])
             ->where(function (Builder $upcomingQuery) use ($today, $currentTime): void {
                 $upcomingQuery
                     ->whereDate('appointment_date', '>', $today)
@@ -437,7 +528,13 @@ class AppointmentController extends DashboardApiController
 
     protected function appointmentHasExpired(Appointment $appointment): bool
     {
-        if ($appointment->appointment_status->value === AppointmentStatus::NoShow->value) {
+        if (
+            in_array(
+                $appointment->appointment_status->value,
+                [AppointmentStatus::NoShow->value, AppointmentStatus::Cancelled->value],
+                true
+            )
+        ) {
             return true;
         }
 
@@ -454,12 +551,18 @@ class AppointmentController extends DashboardApiController
 
     protected function queueStateFor(Appointment $appointment): string
     {
-        $queueEntry = $appointment->queueEntries
-            ->sortByDesc('created_at')
-            ->first();
+        $hasArrivedQueueState = $appointment->queueEntries->contains(function (QueueEntry $entry): bool {
+            $queueStatus = $entry->queue_status->value;
+
+            return $entry->checked_in_at !== null
+                || in_array($queueStatus, [
+                    QueueEntryStatus::Serving->value,
+                    QueueEntryStatus::Completed->value,
+                ], true);
+        });
 
         return match (true) {
-            $queueEntry && ! in_array($queueEntry->queue_status->value, [QueueEntryStatus::Completed->value, QueueEntryStatus::Cancelled->value], true) => 'Checked In',
+            $hasArrivedQueueState => 'Checked In',
             $this->appointmentHasExpired($appointment) => 'Expired',
             default => 'Awaiting Check-In',
         };
@@ -472,9 +575,19 @@ class AppointmentController extends DashboardApiController
 
     protected function transformAppointment(Appointment $appointment): array
     {
-        $queueEntry = $appointment->queueEntries
+        $latestQueueEntry = $appointment->queueEntries
             ->sortByDesc('created_at')
             ->first();
+        $activeQueueEntry = $appointment->queueEntries
+            ->first(function (QueueEntry $entry): bool {
+                $status = $entry->queue_status->value;
+
+                return ! in_array($status, [
+                    QueueEntryStatus::Completed->value,
+                    QueueEntryStatus::Cancelled->value,
+                ], true);
+            });
+        $queueEntry = $activeQueueEntry ?? $latestQueueEntry;
         $qrToken = $appointment->qrCodeTokens
             ->sortByDesc('created_at')
             ->first();
@@ -493,9 +606,25 @@ class AppointmentController extends DashboardApiController
             : '--';
         $visits = (int) ($appointment->customer?->appointments_count ?? 0);
         $noShows = (int) ($appointment->customer?->no_show_appointments_count ?? 0);
-        $waitMinutes = $queueEntry
-            ? max(($queueEntry->queue_position - 1) * ($appointment->service?->average_service_duration_minutes ?? 10), 0)
+        $activeQueuePosition = $activeQueueEntry
+            ? $this->activeQueuePosition($activeQueueEntry)
             : null;
+        $waitMinutes = $activeQueuePosition !== null
+            ? max(($activeQueuePosition - 1) * ($appointment->service?->average_service_duration_minutes ?? 10), 0)
+            : null;
+        $displayStatusValue = $appointment->appointment_status->value;
+        $completedFromQueue = false;
+        if (
+            $latestQueueEntry
+            && $latestQueueEntry->queue_status->value === QueueEntryStatus::Completed->value
+        ) {
+            $displayStatusValue = QueueEntryStatus::Completed->value;
+            $completedFromQueue = true;
+        }
+
+        if ($completedFromQueue && $waitMinutes === null) {
+            $waitMinutes = 0;
+        }
 
         return [
             'id' => $appointment->getKey(),
@@ -509,7 +638,7 @@ class AppointmentController extends DashboardApiController
             'service' => $appointment->service?->service_name ?? 'General Service',
             'date' => DashboardFormatting::shortDate($appointment->appointment_date),
             'time' => DashboardFormatting::shortTime($appointment->appointment_time),
-            'status' => DashboardFormatting::appointmentStatusLabel($appointment->appointment_status->value),
+            'status' => DashboardFormatting::appointmentStatusLabel($displayStatusValue),
             'queueState' => $queueState,
             'email' => $appointment->customer?->email_address ?? 'no-email@smartqdz.local',
             'phone' => $appointment->customer?->phone_number ?? '--',
@@ -519,9 +648,9 @@ class AppointmentController extends DashboardApiController
             'staffName' => $appointment->staffMember?->full_name ?? 'Unassigned',
             'staffInitials' => DashboardFormatting::initials($appointment->staffMember?->full_name ?? 'NA'),
             'checkedInAt' => $queueEntry?->checked_in_at ? DashboardFormatting::shortTime($queueEntry->checked_in_at) : null,
-            'queuePosition' => $queueEntry && ! in_array($queueEntry->queue_status->value, ['completed', 'cancelled'], true)
-                ? '#'.$queueEntry->queue_position
-                : null,
+            'queuePosition' => $activeQueuePosition !== null
+                ? '#'.$activeQueuePosition
+                : ($completedFromQueue ? '#1' : null),
             'waitTime' => $waitMinutes !== null ? '~'.$waitMinutes.' min' : null,
             'qrStatus' => match (true) {
                 $qrToken?->token_status === TokenStatus::Consumed => 'Used',
@@ -530,5 +659,30 @@ class AppointmentController extends DashboardApiController
                 default => 'Unavailable',
             },
         ];
+    }
+
+    protected function activeQueuePosition(QueueEntry $entry): ?int
+    {
+        if (! $entry->queue_session_id) {
+            return null;
+        }
+
+        $activeIds = QueueEntry::query()
+            ->where('queue_session_id', $entry->queue_session_id)
+            ->whereNotIn('queue_status', [
+                QueueEntryStatus::Completed->value,
+                QueueEntryStatus::Cancelled->value,
+            ])
+            ->orderBy('queue_position')
+            ->pluck('id')
+            ->values();
+
+        $index = $activeIds->search($entry->getKey());
+
+        if (! is_int($index)) {
+            return null;
+        }
+
+        return $index + 1;
     }
 }

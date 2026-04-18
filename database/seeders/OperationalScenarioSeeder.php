@@ -45,21 +45,7 @@ class OperationalScenarioSeeder extends Seeder
 
     public function run(): void
     {
-        $company = $this->seedCompany();
-        $branches = $this->seedBranches($company);
-        $services = $this->seedServices($branches);
-        $staff = $this->seedStaff($company, $branches, $services);
-        $customers = $this->seedCustomers();
-
-        $this->seedPreferences($staff);
-        $kiosks = $this->seedKiosks($branches);
-        $appointments = $this->seedAppointments($branches, $services, $staff, $customers);
-
-        $this->seedAppointmentTokens($appointments, $customers, $kiosks);
-        $this->seedWalkInsAndQueue($branches, $services, $staff, $customers, $appointments, $kiosks);
-        $this->seedNotifications($staff);
-        $this->seedAuthArtifacts($staff, $customers);
-        $this->seedHighVolumeScenarios($branches, $services, $staff, $customers, $kiosks);
+        $this->seedPartnerCompanies();
     }
 
     protected function seedCompany(): Company
@@ -1598,6 +1584,227 @@ class OperationalScenarioSeeder extends Seeder
         }
     }
 
+    protected function seedPartnerCompanies(): void
+    {
+        $companies = [
+            [
+                'company_name' => 'Algerie Telecom',
+                'branches' => [
+                    [
+                        'branch_code' => 'AT-ALG-01',
+                        'branch_name' => 'Alger Centre',
+                        'branch_address' => '12 Didouche Mourad, Algiers',
+                        'branch_status' => 'active',
+                        'latitude' => 36.7614,
+                        'longitude' => 3.0516,
+                        'pin_top' => 38,
+                        'pin_left' => 54,
+                    ],
+                    [
+                        'branch_code' => 'AT-ORAN-01',
+                        'branch_name' => 'Oran Plateau',
+                        'branch_address' => 'Boulevard Mohamed V, Oran',
+                        'branch_status' => 'active',
+                        'latitude' => 35.6991,
+                        'longitude' => -0.6410,
+                        'pin_top' => 55,
+                        'pin_left' => 63,
+                    ],
+                ],
+                'services' => [
+                    [
+                        'service_code' => 'AT-SRV-01',
+                        'service_name' => 'Internet Subscription',
+                        'service_subtitle' => 'New lines & upgrades',
+                        'service_description' => 'Fiber, ADSL, and package upgrades.',
+                        'service_icon' => 'wifi',
+                        'average_service_duration_minutes' => 15,
+                        'branch_codes' => ['AT-ALG-01', 'AT-ORAN-01'],
+                    ],
+                    [
+                        'service_code' => 'AT-SRV-02',
+                        'service_name' => 'Billing Support',
+                        'service_subtitle' => 'Invoices & payments',
+                        'service_description' => 'Resolve billing issues and payment confirmations.',
+                        'service_icon' => 'cash',
+                        'average_service_duration_minutes' => 10,
+                        'branch_codes' => ['AT-ALG-01'],
+                    ],
+                ],
+            ],
+            [
+                'company_name' => 'Ooredoo',
+                'branches' => [
+                    [
+                        'branch_code' => 'OO-ALG-01',
+                        'branch_name' => 'Ooredoo Hydra',
+                        'branch_address' => 'Hydra, Algiers',
+                        'branch_status' => 'active',
+                        'latitude' => 36.7440,
+                        'longitude' => 3.0436,
+                        'pin_top' => 42,
+                        'pin_left' => 58,
+                    ],
+                ],
+                'services' => [
+                    [
+                        'service_code' => 'OO-SRV-01',
+                        'service_name' => 'SIM Replacement',
+                        'service_subtitle' => 'Lost & damaged SIM',
+                        'service_description' => 'Replace SIM cards and update customer details.',
+                        'service_icon' => 'card',
+                        'average_service_duration_minutes' => 8,
+                        'branch_codes' => ['OO-ALG-01'],
+                    ],
+                    [
+                        'service_code' => 'OO-SRV-02',
+                        'service_name' => 'Postpaid Upgrade',
+                        'service_subtitle' => 'Plans & add-ons',
+                        'service_description' => 'Upgrade to postpaid plans with extra services.',
+                        'service_icon' => 'support',
+                        'average_service_duration_minutes' => 12,
+                        'branch_codes' => ['OO-ALG-01'],
+                    ],
+                ],
+            ],
+            [
+                'company_name' => 'Mobilis',
+                'branches' => [
+                    [
+                        'branch_code' => 'MO-ALG-01',
+                        'branch_name' => 'Mobilis Bab Ezzouar',
+                        'branch_address' => 'Bab Ezzouar, Algiers',
+                        'branch_status' => 'active',
+                        'latitude' => 36.7126,
+                        'longitude' => 3.1826,
+                        'pin_top' => 60,
+                        'pin_left' => 70,
+                    ],
+                ],
+                'services' => [
+                    [
+                        'service_code' => 'MO-SRV-01',
+                        'service_name' => 'Prepaid Recharge',
+                        'service_subtitle' => 'Top-up & validation',
+                        'service_description' => 'Recharge assistance and validation issues.',
+                        'service_icon' => 'cash',
+                        'average_service_duration_minutes' => 6,
+                        'branch_codes' => ['MO-ALG-01'],
+                    ],
+                ],
+            ],
+            [
+                'company_name' => 'Algerie Poste',
+                'branches' => [
+                    [
+                        'branch_code' => 'AP-ALG-01',
+                        'branch_name' => 'Central Post',
+                        'branch_address' => 'Place Emir Abdelkader, Algiers',
+                        'branch_status' => 'active',
+                        'latitude' => 36.7766,
+                        'longitude' => 3.0586,
+                        'pin_top' => 35,
+                        'pin_left' => 48,
+                    ],
+                ],
+                'services' => [
+                    [
+                        'service_code' => 'AP-SRV-01',
+                        'service_name' => 'Parcel Services',
+                        'service_subtitle' => 'Shipping & pickup',
+                        'service_description' => 'Parcel collection, shipping, and tracking.',
+                        'service_icon' => 'support',
+                        'average_service_duration_minutes' => 14,
+                        'branch_codes' => ['AP-ALG-01'],
+                    ],
+                ],
+            ],
+            [
+                'company_name' => 'CNAS',
+                'branches' => [
+                    [
+                        'branch_code' => 'CN-ALG-01',
+                        'branch_name' => 'CNAS El Mouradia',
+                        'branch_address' => 'El Mouradia, Algiers',
+                        'branch_status' => 'active',
+                        'latitude' => 36.7459,
+                        'longitude' => 3.0511,
+                        'pin_top' => 46,
+                        'pin_left' => 61,
+                    ],
+                ],
+                'services' => [
+                    [
+                        'service_code' => 'CN-SRV-01',
+                        'service_name' => 'Claims Support',
+                        'service_subtitle' => 'Health coverage',
+                        'service_description' => 'Claims review and coverage updates.',
+                        'service_icon' => 'support',
+                        'average_service_duration_minutes' => 18,
+                        'branch_codes' => ['CN-ALG-01'],
+                    ],
+                ],
+            ],
+        ];
+
+        foreach ($companies as $definition) {
+            $company = Company::query()->updateOrCreate(
+                ['company_name' => $definition['company_name']],
+                ['company_status' => CompanyStatus::Active]
+            );
+
+            $branchMap = [];
+
+            foreach ($definition['branches'] as $branchDef) {
+                $branch = Branch::query()->updateOrCreate(
+                    ['branch_code' => $branchDef['branch_code']],
+                    [
+                        'company_id' => $company->getKey(),
+                        'branch_name' => $branchDef['branch_name'],
+                        'branch_address' => $branchDef['branch_address'],
+                        'branch_status' => $branchDef['branch_status'],
+                        'latitude' => $branchDef['latitude'],
+                        'longitude' => $branchDef['longitude'],
+                        'pin_top' => $branchDef['pin_top'],
+                        'pin_left' => $branchDef['pin_left'],
+                    ]
+                );
+
+                $branchMap[$branchDef['branch_code']] = $branch;
+            }
+
+            foreach ($definition['services'] as $serviceDef) {
+                $primaryBranchCode = $serviceDef['branch_codes'][0];
+                $primaryBranch = $branchMap[$primaryBranchCode] ?? null;
+
+                if (! $primaryBranch) {
+                    continue;
+                }
+
+                $service = Service::query()->updateOrCreate(
+                    ['service_code' => $serviceDef['service_code']],
+                    [
+                        'branch_id' => $primaryBranch->getKey(),
+                        'service_name' => $serviceDef['service_name'],
+                        'service_subtitle' => $serviceDef['service_subtitle'],
+                        'service_description' => $serviceDef['service_description'],
+                        'service_icon' => $serviceDef['service_icon'],
+                        'average_service_duration_minutes' => $serviceDef['average_service_duration_minutes'],
+                        'is_active' => true,
+                    ]
+                );
+
+                $service->branches()->sync(
+                    collect($serviceDef['branch_codes'])
+                        ->map(fn (string $code) => $branchMap[$code]?->getKey())
+                        ->filter()
+                        ->values()
+                        ->all()
+                );
+            }
+        }
+    }
+
     protected function seedAuthArtifacts(array $staff, array $customers): void
     {
         $jwtDefinitions = [
@@ -2088,6 +2295,589 @@ class OperationalScenarioSeeder extends Seeder
                     'notification_channel' => $channels[$index % count($channels)],
                     'delivery_status' => $deliveryStatus,
                     'message_content' => sprintf('Synthetic %s notification generated for load scenario #%02d.', $type, $index),
+                    'read_at' => $readAt,
+                ]
+            );
+
+            $this->setTimestamps($notification, $occurredAt, $readAt ?? $occurredAt);
+        }
+    }
+
+    protected function seedRealtimeStressScenarios(
+        array $branches,
+        array $services,
+        array $staff,
+        array $customers,
+        array $kiosks,
+    ): void {
+        $branch = $branches['hq'];
+        $service = $services['onboarding'];
+        $primaryStaff = $staff['moumen_staff']['member'];
+        $backupStaff = $staff['ops_manager']['member'];
+        $frontKiosk = $kiosks['hq_front'] ?? null;
+        $priorityKiosk = $kiosks['hq_priority'] ?? $frontKiosk;
+
+        // Keep the assigned staff service visible in the operational flows.
+        $service->update([
+            'is_active' => true,
+        ]);
+
+        $syntheticCustomers = [];
+        for ($index = 1; $index <= 120; $index++) {
+            $phoneNumber = sprintf('+213559990%03d', $index);
+            $customer = Customer::query()->updateOrCreate(
+                ['phone_number' => $phoneNumber],
+                [
+                    'user_id' => null,
+                    'full_name' => sprintf('Realtime Customer %03d', $index),
+                    'email_address' => sprintf('realtime.customer.%03d@smartq-load.test', $index),
+                ]
+            );
+
+            $syntheticCustomers[] = $customer;
+        }
+
+        $syntheticCustomerIds = collect($syntheticCustomers)
+            ->map(fn (Customer $customer) => $customer->getKey())
+            ->values()
+            ->all();
+
+        $syntheticAppointmentIds = Appointment::withTrashed()
+            ->where('branch_id', $branch->getKey())
+            ->where('service_id', $service->getKey())
+            ->whereIn('customer_id', $syntheticCustomerIds)
+            ->pluck('id')
+            ->all();
+
+        if ($syntheticAppointmentIds !== []) {
+            QueueEntry::query()->whereIn('appointment_id', $syntheticAppointmentIds)->delete();
+            QrCodeToken::query()->whereIn('appointment_id', $syntheticAppointmentIds)->delete();
+            Appointment::withTrashed()->whereIn('id', $syntheticAppointmentIds)->forceDelete();
+        }
+
+        $syntheticTicketIds = WalkInTicket::withTrashed()
+            ->where('branch_id', $branch->getKey())
+            ->whereBetween('ticket_number', [9600, 9999])
+            ->pluck('id')
+            ->all();
+
+        if ($syntheticTicketIds !== []) {
+            QueueEntry::query()->whereIn('ticket_id', $syntheticTicketIds)->delete();
+            QrCodeToken::query()->whereIn('ticket_id', $syntheticTicketIds)->delete();
+            WalkInTicket::withTrashed()->whereIn('id', $syntheticTicketIds)->forceDelete();
+        }
+
+        $today = today();
+        $now = now()->copy()->setSecond(0);
+        $sessionPositions = [];
+        $ticketNumber = 9600;
+        $customerCursor = 0;
+        $sources = [TicketSource::Reception, TicketSource::Kiosk, TicketSource::QrScan, TicketSource::StaffAssisted];
+
+        $nextCustomer = function () use (&$syntheticCustomers, &$customerCursor): Customer {
+            $customer = $syntheticCustomers[$customerCursor % count($syntheticCustomers)];
+            $customerCursor++;
+
+            return $customer;
+        };
+
+        $resolveUpdatedAt = function (
+            Carbon $createdAt,
+            ?Carbon $checkedInAt,
+            ?Carbon $serviceStartedAt,
+            int $position,
+            Carbon $capTime,
+        ): Carbon {
+            $updatedAt = $serviceStartedAt
+                ? $serviceStartedAt->copy()->addMinutes(5 + ($position % 7))
+                : ($checkedInAt
+                    ? $checkedInAt->copy()->addMinutes(3 + ($position % 5))
+                    : $createdAt->copy()->addMinutes(4 + ($position % 4)));
+
+            if ($updatedAt->greaterThan($capTime)) {
+                $updatedAt = $capTime->copy();
+            }
+
+            if ($updatedAt->lessThan($createdAt)) {
+                $updatedAt = $createdAt->copy()->addMinute();
+            }
+
+            return $updatedAt;
+        };
+
+        $persistWalkIn = function (
+            DailyQueueSession $session,
+            QueueEntryStatus $queueStatus,
+            TicketStatus $ticketStatus,
+            Carbon $createdAt,
+            ?Carbon $checkedInAt,
+            ?Carbon $serviceStartedAt,
+            ?StaffMember $servedBy,
+            ?CheckInResult $checkInResult,
+            ?KioskDevice $kiosk = null,
+            ?string $notes = null,
+        ) use (
+            $branch,
+            $service,
+            &$sessionPositions,
+            &$ticketNumber,
+            $sources,
+            $nextCustomer,
+            $resolveUpdatedAt,
+            $now,
+        ): void {
+            $sessionId = $session->getKey();
+            $position = ($sessionPositions[$sessionId] ?? 0) + 1;
+            $sessionPositions[$sessionId] = $position;
+            $customer = $nextCustomer();
+            $ticketNumber++;
+            $ticketSource = $sources[$ticketNumber % count($sources)];
+            $sessionDate = Carbon::parse((string) $session->session_date);
+            $capTime = $sessionDate->isToday() ? $now : $sessionDate->copy()->endOfDay();
+            $updatedAt = $resolveUpdatedAt($createdAt, $checkedInAt, $serviceStartedAt, $position, $capTime);
+
+            $ticket = WalkInTicket::query()->updateOrCreate(
+                [
+                    'branch_id' => $branch->getKey(),
+                    'ticket_number' => $ticketNumber,
+                ],
+                [
+                    'customer_id' => $customer->getKey(),
+                    'service_id' => $service->getKey(),
+                    'queue_session_id' => $session->getKey(),
+                    'appointment_id' => null,
+                    'ticket_source' => $ticketSource,
+                    'ticket_status' => $ticketStatus,
+                    'notes' => $notes,
+                ]
+            );
+
+            $this->setTimestamps($ticket, $createdAt, $updatedAt);
+
+            $entry = QueueEntry::query()->updateOrCreate(
+                ['ticket_id' => $ticket->getKey()],
+                [
+                    'queue_session_id' => $session->getKey(),
+                    'customer_id' => $customer->getKey(),
+                    'queue_position' => $position,
+                    'queue_status' => $queueStatus,
+                    'checked_in_at' => $checkedInAt,
+                    'service_started_at' => $serviceStartedAt,
+                    'served_by_staff_id' => $servedBy?->getKey(),
+                    'appointment_id' => null,
+                ]
+            );
+
+            $this->setTimestamps($entry, $createdAt, $updatedAt);
+
+            $tokenStatus = match ($queueStatus) {
+                QueueEntryStatus::Waiting => TokenStatus::Active,
+                QueueEntryStatus::Cancelled => TokenStatus::Expired,
+                default => TokenStatus::Consumed,
+            };
+            $tokenUsedAt = $tokenStatus === TokenStatus::Consumed
+                ? ($checkedInAt ?? $createdAt->copy()->addMinutes(2))
+                : null;
+            $tokenValue = sprintf(
+                'RTM-WLK-%s-%s',
+                $sessionDate->format('Ymd'),
+                $ticketNumber
+            );
+
+            $token = QrCodeToken::query()->updateOrCreate(
+                ['token_value' => $tokenValue],
+                [
+                    'ticket_id' => $ticket->getKey(),
+                    'appointment_id' => null,
+                    'expiration_date_time' => $createdAt->copy()->addHours(8),
+                    'used_date_time' => $tokenUsedAt,
+                    'token_status' => $tokenStatus,
+                ]
+            );
+
+            $this->setTimestamps($token, $createdAt, $tokenUsedAt ?? $updatedAt);
+
+            if ($checkInResult !== null) {
+                $record = CheckInRecord::query()->updateOrCreate(
+                    ['qr_token_id' => $token->getKey()],
+                    [
+                        'kiosk_id' => $kiosk?->getKey(),
+                        'customer_id' => $customer->getKey(),
+                        'check_in_date_time' => $checkedInAt ?? $createdAt,
+                        'check_in_result' => $checkInResult,
+                    ]
+                );
+
+                $this->setTimestamps($record, $checkedInAt ?? $createdAt, $updatedAt);
+            }
+        };
+
+        $todaySession = DailyQueueSession::query()->updateOrCreate(
+            [
+                'branch_id' => $branch->getKey(),
+                'service_id' => $service->getKey(),
+                'session_date' => $today->toDateString(),
+            ],
+            [
+                'session_start_time' => '08:00:00',
+                'session_end_time' => '20:00:00',
+                'session_status' => QueueSessionStatus::Live,
+            ]
+        );
+
+        $dayStart = $today->copy()->startOfDay();
+        $clampToToday = fn (Carbon $time) => $time->lessThan($dayStart)
+            ? $dayStart->copy()->addMinutes(5)
+            : $time;
+
+        $persistWalkIn(
+            $todaySession,
+            QueueEntryStatus::Serving,
+            TicketStatus::Serving,
+            $clampToToday($now->copy()->subMinutes(38)),
+            $clampToToday($now->copy()->subMinutes(29)),
+            $clampToToday($now->copy()->subMinutes(18)),
+            $primaryStaff,
+            CheckInResult::Success,
+            $frontKiosk,
+            'Realtime lane currently serving a customer at the front counter.'
+        );
+
+        $persistWalkIn(
+            $todaySession,
+            QueueEntryStatus::Next,
+            TicketStatus::CheckedIn,
+            $clampToToday($now->copy()->subMinutes(33)),
+            $clampToToday($now->copy()->subMinutes(21)),
+            null,
+            null,
+            CheckInResult::Success,
+            $priorityKiosk,
+            'Realtime lane already checked-in and waiting for the call.'
+        );
+
+        for ($index = 0; $index < 28; $index++) {
+            $createdAt = $clampToToday($now->copy()->subMinutes(30 + ($index * 2)));
+            $checkedInAt = $index % 3 === 0 ? $createdAt->copy()->addMinutes(4) : null;
+
+            $persistWalkIn(
+                $todaySession,
+                QueueEntryStatus::Waiting,
+                TicketStatus::Queued,
+                $createdAt,
+                $checkedInAt,
+                null,
+                null,
+                $checkedInAt ? CheckInResult::Success : null,
+                $index % 3 === 0 ? $frontKiosk : null,
+                $index % 5 === 0
+                    ? 'Realtime queue pressure test: waiting ticket with longer dwell time.'
+                    : null
+            );
+        }
+
+        for ($index = 0; $index < 20; $index++) {
+            $createdAt = $clampToToday($now->copy()->subMinutes(240 + ($index * 6)));
+            $checkedInAt = $createdAt->copy()->addMinutes(5);
+            $serviceStartedAt = $checkedInAt->copy()->addMinutes(6 + ($index % 4));
+
+            $persistWalkIn(
+                $todaySession,
+                QueueEntryStatus::Completed,
+                TicketStatus::Completed,
+                $createdAt,
+                $checkedInAt,
+                $serviceStartedAt,
+                $index % 4 === 0 ? $backupStaff : $primaryStaff,
+                CheckInResult::Success,
+                $index % 2 === 0 ? $frontKiosk : $priorityKiosk
+            );
+        }
+
+        for ($index = 0; $index < 12; $index++) {
+            $createdAt = $clampToToday($now->copy()->subMinutes(170 + ($index * 7)));
+            $checkedInAt = $index % 2 === 0 ? $createdAt->copy()->addMinutes(6) : null;
+
+            $persistWalkIn(
+                $todaySession,
+                QueueEntryStatus::Cancelled,
+                TicketStatus::Escalated,
+                $createdAt,
+                $checkedInAt,
+                null,
+                null,
+                $checkedInAt ? CheckInResult::ManualAssist : null,
+                $checkedInAt ? $priorityKiosk : null,
+                'Realtime cancellation scenario used to validate cancelled/escalated handling.'
+            );
+        }
+
+        for ($daysBack = 1; $daysBack <= 6; $daysBack++) {
+            $sessionDate = $today->copy()->subDays($daysBack);
+            $historicalSession = DailyQueueSession::query()->updateOrCreate(
+                [
+                    'branch_id' => $branch->getKey(),
+                    'service_id' => $service->getKey(),
+                    'session_date' => $sessionDate->toDateString(),
+                ],
+                [
+                    'session_start_time' => '08:00:00',
+                    'session_end_time' => '18:00:00',
+                    'session_status' => QueueSessionStatus::Live,
+                ]
+            );
+
+            for ($index = 0; $index < 18; $index++) {
+                $createdAt = $sessionDate->copy()->setTime(8, 15)->addMinutes($index * 17);
+                $checkedInAt = $createdAt->copy()->addMinutes(4);
+                $serviceStartedAt = $checkedInAt->copy()->addMinutes(7 + ($index % 5));
+
+                $persistWalkIn(
+                    $historicalSession,
+                    QueueEntryStatus::Completed,
+                    TicketStatus::Completed,
+                    $createdAt,
+                    $checkedInAt,
+                    $serviceStartedAt,
+                    $index % 3 === 0 ? $backupStaff : $primaryStaff,
+                    CheckInResult::Success,
+                    $frontKiosk
+                );
+            }
+
+            for ($index = 0; $index < 6; $index++) {
+                $createdAt = $sessionDate->copy()->setTime(12, 5)->addMinutes($index * 19);
+                $checkedInAt = $index % 2 === 0 ? $createdAt->copy()->addMinutes(5) : null;
+
+                $persistWalkIn(
+                    $historicalSession,
+                    QueueEntryStatus::Cancelled,
+                    TicketStatus::Escalated,
+                    $createdAt,
+                    $checkedInAt,
+                    null,
+                    null,
+                    $checkedInAt ? CheckInResult::ManualAssist : null,
+                    $checkedInAt ? $priorityKiosk : null
+                );
+            }
+        }
+
+        $appointmentCursor = 0;
+        $todayAppointments = [];
+
+        for ($dayOffset = -3; $dayOffset <= 3; $dayOffset++) {
+            for ($slot = 0; $slot < 8; $slot++) {
+                $customer = $syntheticCustomers[$appointmentCursor % count($syntheticCustomers)];
+                $appointmentCursor++;
+                $baseHour = max(9, min(16, (int) $now->format('H')));
+                $appointmentDateTime = $now->copy()
+                    ->setTime($baseHour, 0, 0)
+                    ->addDays($dayOffset)
+                    ->addMinutes(($slot - 3) * 25);
+
+                $status = match (true) {
+                    $dayOffset < 0 => [
+                        AppointmentStatus::Confirmed,
+                        AppointmentStatus::NoShow,
+                        AppointmentStatus::Cancelled,
+                        AppointmentStatus::Confirmed,
+                        AppointmentStatus::NoShow,
+                        AppointmentStatus::Confirmed,
+                        AppointmentStatus::Cancelled,
+                        AppointmentStatus::Confirmed,
+                    ][$slot],
+                    $dayOffset === 0 => [
+                        AppointmentStatus::Active,
+                        AppointmentStatus::Confirmed,
+                        AppointmentStatus::Confirmed,
+                        AppointmentStatus::Pending,
+                        AppointmentStatus::Pending,
+                        AppointmentStatus::Confirmed,
+                        AppointmentStatus::Cancelled,
+                        AppointmentStatus::NoShow,
+                    ][$slot],
+                    default => [
+                        AppointmentStatus::Pending,
+                        AppointmentStatus::Confirmed,
+                        AppointmentStatus::Pending,
+                        AppointmentStatus::Confirmed,
+                        AppointmentStatus::Pending,
+                        AppointmentStatus::Confirmed,
+                        AppointmentStatus::Pending,
+                        AppointmentStatus::Confirmed,
+                    ][$slot],
+                };
+
+                $staffId = in_array($status, [AppointmentStatus::Confirmed, AppointmentStatus::Active, AppointmentStatus::NoShow], true)
+                    ? $primaryStaff->getKey()
+                    : null;
+                $createdAt = $appointmentDateTime->copy()
+                    ->subDays(2 + ($slot % 3))
+                    ->setTime(9 + ($slot % 6), 8 + (($slot * 7) % 45));
+
+                if ($createdAt->isFuture()) {
+                    $createdAt = $now->copy()->subHours(2 + ($slot % 4));
+                }
+
+                $appointment = Appointment::query()->updateOrCreate(
+                    [
+                        'customer_id' => $customer->getKey(),
+                        'branch_id' => $branch->getKey(),
+                        'service_id' => $service->getKey(),
+                        'appointment_date' => $appointmentDateTime->toDateString(),
+                        'appointment_time' => $appointmentDateTime->format('H:i:s'),
+                    ],
+                    [
+                        'staff_id' => $staffId,
+                        'appointment_status' => $status,
+                    ]
+                );
+
+                $updatedAt = $createdAt->copy()->addHours(4);
+                if ($updatedAt->greaterThan($now)) {
+                    $updatedAt = $now->copy();
+                }
+
+                $this->setTimestamps($appointment, $createdAt, $updatedAt);
+
+                if ($dayOffset === 0 && in_array($status, [AppointmentStatus::Active, AppointmentStatus::Confirmed, AppointmentStatus::Pending], true)) {
+                    $todayAppointments[] = $appointment;
+                }
+
+                $tokenStatus = match ($status) {
+                    AppointmentStatus::Cancelled, AppointmentStatus::NoShow => TokenStatus::Expired,
+                    AppointmentStatus::Pending => TokenStatus::Active,
+                    AppointmentStatus::Active => TokenStatus::Consumed,
+                    AppointmentStatus::Confirmed => $dayOffset < 0 ? TokenStatus::Consumed : TokenStatus::Active,
+                };
+                $tokenUsedAt = $tokenStatus === TokenStatus::Consumed
+                    ? ($appointmentDateTime->copy()->addMinutes(10)->greaterThan($now)
+                        ? $now->copy()
+                        : $appointmentDateTime->copy()->addMinutes(10))
+                    : null;
+                $tokenValue = sprintf('RTM-APT-ONB-%s-%02d', $appointmentDateTime->format('YmdHi'), $slot + 1);
+
+                $token = QrCodeToken::query()->updateOrCreate(
+                    ['token_value' => $tokenValue],
+                    [
+                        'appointment_id' => $appointment->getKey(),
+                        'ticket_id' => null,
+                        'expiration_date_time' => $appointmentDateTime->copy()->addHours(4),
+                        'used_date_time' => $tokenUsedAt,
+                        'token_status' => $tokenStatus,
+                    ]
+                );
+
+                $this->setTimestamps($token, $createdAt, $tokenUsedAt ?? $updatedAt);
+
+                if ($tokenStatus === TokenStatus::Consumed) {
+                    $record = CheckInRecord::query()->updateOrCreate(
+                        ['qr_token_id' => $token->getKey()],
+                        [
+                            'kiosk_id' => $frontKiosk?->getKey(),
+                            'customer_id' => $customer->getKey(),
+                            'check_in_date_time' => $tokenUsedAt ?? $appointmentDateTime,
+                            'check_in_result' => CheckInResult::Success,
+                        ]
+                    );
+
+                    $this->setTimestamps($record, $tokenUsedAt ?? $createdAt, $tokenUsedAt ?? $updatedAt);
+                }
+            }
+        }
+
+        $appointmentQueueStatuses = [
+            QueueEntryStatus::Serving,
+            QueueEntryStatus::Next,
+            QueueEntryStatus::Waiting,
+            QueueEntryStatus::Waiting,
+            QueueEntryStatus::Completed,
+            QueueEntryStatus::Cancelled,
+            QueueEntryStatus::Waiting,
+            QueueEntryStatus::Completed,
+        ];
+
+        foreach ($appointmentQueueStatuses as $index => $queueStatus) {
+            if (! isset($todayAppointments[$index])) {
+                break;
+            }
+
+            $appointment = $todayAppointments[$index];
+            $sessionId = $todaySession->getKey();
+            $position = ($sessionPositions[$sessionId] ?? 0) + 1;
+            $sessionPositions[$sessionId] = $position;
+            $createdAt = $clampToToday($now->copy()->subMinutes(75 + ($index * 6)));
+            $checkedInAt = in_array($queueStatus, [QueueEntryStatus::Serving, QueueEntryStatus::Next, QueueEntryStatus::Completed], true)
+                ? $createdAt->copy()->addMinutes(5)
+                : null;
+            $serviceStartedAt = in_array($queueStatus, [QueueEntryStatus::Serving, QueueEntryStatus::Completed], true)
+                ? $checkedInAt?->copy()->addMinutes(6)
+                : null;
+            $updatedAt = $resolveUpdatedAt($createdAt, $checkedInAt, $serviceStartedAt, $position, $now);
+
+            $entry = QueueEntry::query()->updateOrCreate(
+                ['appointment_id' => $appointment->getKey()],
+                [
+                    'queue_session_id' => $todaySession->getKey(),
+                    'customer_id' => $appointment->customer_id,
+                    'queue_position' => $position,
+                    'queue_status' => $queueStatus,
+                    'checked_in_at' => $checkedInAt,
+                    'service_started_at' => $serviceStartedAt,
+                    'served_by_staff_id' => in_array($queueStatus, [QueueEntryStatus::Serving, QueueEntryStatus::Completed], true)
+                        ? $primaryStaff->getKey()
+                        : null,
+                    'ticket_id' => null,
+                ]
+            );
+
+            $this->setTimestamps($entry, $createdAt, $updatedAt);
+        }
+
+        Notification::query()
+            ->where('user_id', $staff['moumen_staff']['user']->getKey())
+            ->where('title', 'like', 'Realtime Load %')
+            ->delete();
+
+        $notificationTypes = ['queue_alert', 'service_update', 'daily_summary', 'staffing', 'security'];
+        $channels = [
+            NotificationChannel::InApp,
+            NotificationChannel::Push,
+            NotificationChannel::Email,
+            NotificationChannel::Sms,
+        ];
+
+        for ($index = 1; $index <= 36; $index++) {
+            $occurredAt = $now->copy()->subMinutes($index * 4);
+            $deliveryStatus = match (true) {
+                $index % 9 === 0 => NotificationDeliveryStatus::Failed,
+                $index % 4 === 0 => NotificationDeliveryStatus::Pending,
+                default => NotificationDeliveryStatus::Sent,
+            };
+            $readAt = $index % 3 === 0 ? null : $occurredAt->copy()->addMinutes(15);
+            $type = $notificationTypes[$index % count($notificationTypes)];
+            $title = sprintf('Realtime Load %02d - %s', $index, strtoupper(str_replace('_', ' ', $type)));
+
+            $notification = Notification::query()->updateOrCreate(
+                [
+                    'user_id' => $staff['moumen_staff']['user']->getKey(),
+                    'notification_type' => $type,
+                    'occurred_at' => $occurredAt,
+                ],
+                [
+                    'title' => $title,
+                    'description' => 'Synthetic operational notification generated for realtime stress testing.',
+                    'tone' => match ($type) {
+                        'queue_alert' => 'warning',
+                        'security' => 'critical',
+                        'daily_summary' => 'success',
+                        default => 'info',
+                    },
+                    'action_path' => '/queue-monitor',
+                    'notification_channel' => $channels[$index % count($channels)],
+                    'delivery_status' => $deliveryStatus,
+                    'message_content' => 'Realtime stress notification payload for UI badge, feed, and acknowledgement tests.',
                     'read_at' => $readAt,
                 ]
             );

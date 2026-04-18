@@ -1,0 +1,118 @@
+<?php
+
+namespace App\Http\Controllers\Api\Mobile\Bookings;
+
+use App\Enums\TokenStatus;
+use App\Http\Controllers\Api\Mobile\MobileApiController;
+use App\Http\Requests\Api\Mobile\Bookings\CancelBookingRequest;
+use App\Http\Requests\Api\Mobile\Bookings\ConfirmBookingRequest;
+use App\Models\Appointment;
+use App\Models\Customer;
+use App\Models\QrCodeToken;
+use App\Models\User;
+use App\Support\Dashboard\BookingCodeFormatter;
+use App\Support\Dashboard\OperationalWorkflowService;
+use Carbon\Carbon;
+use Illuminate\Support\Str;
+
+class BookingController extends MobileApiController
+{
+    public function __construct(
+        protected OperationalWorkflowService $workflow,
+    ) {}
+
+    public function confirm(ConfirmBookingRequest $request)
+    {
+        /** @var User $user */
+        $user = $request->user();
+
+        $customer = $user->customer;
+
+        if (! $customer) {
+            $customer = Customer::query()->create([
+                'user_id' => $user->getKey(),
+                'full_name' => $request->string('full_name')->value() ?: 'Customer',
+                'phone_number' => $user->phone_number ?? '',
+                'email_address' => $user->email,
+            ]);
+        }
+
+        $appointmentDate = Carbon::parse((string) $request->input('appointment_date'))
+            ->toDateString();
+        $serviceId = $request->string('service_id')->value();
+
+        $alreadyBookedToday = Appointment::query()
+            ->where('customer_id', $customer->getKey())
+            ->where('service_id', $serviceId)
+            ->whereDate('appointment_date', $appointmentDate)
+            ->where('appointment_status', '!=', 'cancelled')
+            ->exists();
+
+        if ($alreadyBookedToday) {
+            return $this->respondValidationError(
+                'You already have a booking for this service today. Cancel it first to create a new one.',
+                [
+                    'service_id' => [
+                        'One booking per service is allowed per day unless the existing booking is cancelled.',
+                    ],
+                ],
+            );
+        }
+
+        $appointment = Appointment::query()->create([
+            'customer_id' => $customer->getKey(),
+            'branch_id' => $request->string('branch_id')->value(),
+            'service_id' => $serviceId,
+            'appointment_date' => $appointmentDate,
+            'appointment_time' => $request->input('appointment_time'),
+            'appointment_status' => 'pending',
+        ]);
+
+        $tokenValue = strtoupper(Str::random(6)).'-'.strtoupper(Str::random(2));
+        // QR is valid only on the appointment day.
+        $expiresAt = Carbon::parse($appointment->appointment_date)->endOfDay();
+
+        $qrToken = QrCodeToken::query()->create([
+            'appointment_id' => $appointment->getKey(),
+            'token_value' => $tokenValue,
+            'expiration_date_time' => $expiresAt,
+            'token_status' => 'active',
+        ]);
+
+        return $this->respond([
+            'appointment_id' => $appointment->getKey(),
+            'booking_code' => BookingCodeFormatter::appointmentDisplayCode($appointment),
+            'access_key' => $qrToken->token_value,
+            'status' => $appointment->appointment_status,
+        ], 'Booking created successfully.', 201);
+    }
+
+    public function cancel(CancelBookingRequest $request)
+    {
+        /** @var User $user */
+        $user = $request->user();
+        $customer = $user->customer;
+
+        $appointment = Appointment::query()
+            ->whereKey($request->string('appointment_id')->value())
+            ->firstOrFail();
+
+        if ($customer && $appointment->customer_id !== $customer->getKey()) {
+            abort(404);
+        }
+
+        $appointment->update([
+            'appointment_status' => 'cancelled',
+        ]);
+
+        // Ensure cancelled mobile bookings are removed from active queue monitor.
+        $this->workflow->cancelAppointmentQueueEntries($appointment);
+        $appointment->qrCodeTokens()
+            ->where('token_status', TokenStatus::Active->value)
+            ->update([
+                'token_status' => TokenStatus::Expired,
+            ]);
+
+        return $this->respond(message: 'Booking cancelled successfully.');
+    }
+}

@@ -27,6 +27,7 @@ class User extends Authenticatable
         'email',
         'phone_number',
         'password_hash',
+        'user_type',
         'is_active',
     ];
 
@@ -75,6 +76,11 @@ class User extends Authenticatable
     public function notifications(): HasMany
     {
         return $this->hasMany(Notification::class);
+    }
+
+    public function deviceTokens(): HasMany
+    {
+        return $this->hasMany(DeviceToken::class);
     }
 
     public function jwtTokens(): HasMany

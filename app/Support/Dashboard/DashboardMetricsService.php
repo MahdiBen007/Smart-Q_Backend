@@ -6,6 +6,7 @@ use App\Models\Appointment;
 use App\Models\QueueEntry;
 use App\Models\WalkInTicket;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 
 class DashboardMetricsService
 {
@@ -19,7 +20,8 @@ class DashboardMetricsService
     {
         $query = Appointment::query()
             ->selectRaw('appointment_date as metric_date, COUNT(*) as aggregate_count')
-            ->whereBetween('appointment_date', [$startDate->toDateString(), $endDate->toDateString()])
+            ->whereDate('appointment_date', '>=', $startDate->toDateString())
+            ->whereDate('appointment_date', '<=', $endDate->toDateString())
             ->groupBy('metric_date');
 
         if ($serviceId !== null) {
@@ -33,8 +35,10 @@ class DashboardMetricsService
         }
 
         return $query
-            ->pluck('aggregate_count', 'metric_date')
-            ->map(fn (mixed $count) => (int) $count)
+            ->get()
+            ->mapWithKeys(fn (object $row) => [
+                $this->normalizeDateKey($row->metric_date) => (int) $row->aggregate_count,
+            ])
             ->all();
     }
 
@@ -62,8 +66,10 @@ class DashboardMetricsService
         }
 
         return $query
-            ->pluck('aggregate_count', 'metric_date')
-            ->map(fn (mixed $count) => (int) $count)
+            ->get()
+            ->mapWithKeys(fn (object $row) => [
+                $this->normalizeDateKey($row->metric_date) => (int) $row->aggregate_count,
+            ])
             ->all();
     }
 
@@ -76,8 +82,14 @@ class DashboardMetricsService
     ): array
     {
         $query = Appointment::query()
-            ->selectRaw('appointment_date as metric_date, HOUR(appointment_time) as metric_hour, COUNT(*) as aggregate_count')
-            ->whereBetween('appointment_date', [$startDate->toDateString(), $endDate->toDateString()])
+            ->selectRaw(
+                sprintf(
+                    'appointment_date as metric_date, %s as metric_hour, COUNT(*) as aggregate_count',
+                    $this->hourExpression('appointment_time')
+                )
+            )
+            ->whereDate('appointment_date', '>=', $startDate->toDateString())
+            ->whereDate('appointment_date', '<=', $endDate->toDateString())
             ->whereNotNull('appointment_time')
             ->groupBy('metric_date', 'metric_hour');
 
@@ -94,7 +106,7 @@ class DashboardMetricsService
         return $query
             ->get()
             ->mapWithKeys(fn (object $row) => [
-                $row->metric_date.'|'.str_pad((string) $row->metric_hour, 2, '0', STR_PAD_LEFT) => (int) $row->aggregate_count,
+                $this->normalizeDateKey($row->metric_date).'|'.str_pad((string) $row->metric_hour, 2, '0', STR_PAD_LEFT) => (int) $row->aggregate_count,
             ])
             ->all();
     }
@@ -108,7 +120,12 @@ class DashboardMetricsService
     ): array
     {
         $query = WalkInTicket::query()
-            ->selectRaw('DATE(created_at) as metric_date, HOUR(created_at) as metric_hour, COUNT(*) as aggregate_count')
+            ->selectRaw(
+                sprintf(
+                    'DATE(created_at) as metric_date, %s as metric_hour, COUNT(*) as aggregate_count',
+                    $this->hourExpression('created_at')
+                )
+            )
             ->whereBetween('created_at', [$startDate->copy()->startOfDay(), $endDate->copy()->endOfDay()])
             ->groupBy('metric_date', 'metric_hour');
 
@@ -125,7 +142,7 @@ class DashboardMetricsService
         return $query
             ->get()
             ->mapWithKeys(fn (object $row) => [
-                $row->metric_date.'|'.str_pad((string) $row->metric_hour, 2, '0', STR_PAD_LEFT) => (int) $row->aggregate_count,
+                $this->normalizeDateKey($row->metric_date).'|'.str_pad((string) $row->metric_hour, 2, '0', STR_PAD_LEFT) => (int) $row->aggregate_count,
             ])
             ->all();
     }
@@ -154,8 +171,10 @@ class DashboardMetricsService
         }
 
         return $query
-            ->pluck('aggregate_count', 'metric_date')
-            ->map(fn (mixed $count) => (int) $count)
+            ->get()
+            ->mapWithKeys(fn (object $row) => [
+                $this->normalizeDateKey($row->metric_date) => (int) $row->aggregate_count,
+            ])
             ->all();
     }
 
@@ -167,7 +186,9 @@ class DashboardMetricsService
     ): array
     {
         $query = QueueEntry::query()
-            ->selectRaw('HOUR(updated_at) as metric_hour, COUNT(*) as aggregate_count')
+            ->selectRaw(
+                sprintf('%s as metric_hour, COUNT(*) as aggregate_count', $this->hourExpression('updated_at'))
+            )
             ->whereBetween('updated_at', [$date->copy()->startOfDay(), $date->copy()->endOfDay()])
             ->groupBy('metric_hour');
 
@@ -224,5 +245,17 @@ class DashboardMetricsService
     public function formatDateKey(Carbon $date): string
     {
         return $date->toDateString();
+    }
+
+    protected function hourExpression(string $column): string
+    {
+        return DB::connection()->getDriverName() === 'sqlite'
+            ? "CAST(strftime('%H', {$column}) AS INTEGER)"
+            : "HOUR({$column})";
+    }
+
+    protected function normalizeDateKey(mixed $value): string
+    {
+        return Carbon::parse((string) $value)->toDateString();
     }
 }

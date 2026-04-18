@@ -17,6 +17,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\Cache;
+use Throwable;
 
 abstract class DashboardApiController extends Controller
 {
@@ -49,7 +50,11 @@ abstract class DashboardApiController extends Controller
             return $callback();
         }
 
-        return Cache::remember($key, now()->addSeconds($seconds), $callback);
+        try {
+            return Cache::remember($key, now()->addSeconds($seconds), $callback);
+        } catch (Throwable) {
+            return $callback();
+        }
     }
 
     protected function rememberScopedPayload(
@@ -63,7 +68,11 @@ abstract class DashboardApiController extends Controller
         }
 
         $companyId = $this->currentCompanyId($request);
-        $version = (int) Cache::get($this->dashboardCacheVersionKey($companyId), 1);
+        try {
+            $version = (int) Cache::get($this->dashboardCacheVersionKey($companyId), 1);
+        } catch (Throwable) {
+            $version = 1;
+        }
         $scopedKey = sprintf(
             'dashboard:%s:%s:v%d',
             $this->companyCacheScope($companyId),
@@ -71,16 +80,23 @@ abstract class DashboardApiController extends Controller
             max($version, 1)
         );
 
-        return Cache::remember($scopedKey, now()->addSeconds($seconds), $callback);
+        try {
+            return Cache::remember($scopedKey, now()->addSeconds($seconds), $callback);
+        } catch (Throwable) {
+            return $callback();
+        }
     }
 
     protected function invalidateDashboardCache(?Request $request = null, ?string $companyId = null): void
     {
         $resolvedCompanyId = $companyId ?? ($request ? $this->currentCompanyId($request) : null);
         $versionKey = $this->dashboardCacheVersionKey($resolvedCompanyId);
-        $currentVersion = (int) Cache::get($versionKey, 1);
-
-        Cache::forever($versionKey, max($currentVersion, 1) + 1);
+        try {
+            $currentVersion = (int) Cache::get($versionKey, 1);
+            Cache::forever($versionKey, max($currentVersion, 1) + 1);
+        } catch (Throwable) {
+            // Cache backend is optional for dashboard operation.
+        }
     }
 
     protected function currentCompanyId(?Request $request = null): ?string

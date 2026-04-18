@@ -61,9 +61,11 @@ Route::middleware('jwt.auth')->group(function () {
             Route::get('bootstrap', [AppointmentController::class, 'bootstrap']);
             Route::get('/', [AppointmentController::class, 'index']);
             Route::post('check-in', [AppointmentController::class, 'checkIn']);
+            Route::post('{appointment}/simulate-check-in', [AppointmentController::class, 'simulateCheckIn']);
             Route::get('{appointment}', [AppointmentController::class, 'show']);
             Route::patch('{appointment}/mark-no-show', [AppointmentController::class, 'markNoShow']);
             Route::middleware('dashboard.role:admin')->patch('{appointment}/cancel', [AppointmentController::class, 'cancel']);
+            Route::middleware('dashboard.role:admin')->delete('{appointment}', [AppointmentController::class, 'destroy']);
         });
 
         Route::prefix('walk-ins')->group(function () {

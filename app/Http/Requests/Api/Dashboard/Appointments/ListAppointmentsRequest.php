@@ -14,7 +14,7 @@ class ListAppointmentsRequest extends DashboardIndexRequest
             'search' => ['sometimes', 'nullable', 'string', 'max:255'],
             'branch_id' => ['sometimes', 'nullable', $this->branchExistsRule()],
             'service_id' => ['sometimes', 'nullable', $this->serviceExistsRule()],
-            'status' => ['sometimes', Rule::in(['Confirmed', 'Active', 'Pending', 'No-Show', 'Cancelled'])],
+            'status' => ['sometimes', Rule::in(['Confirmed', 'Active', 'Pending', 'Completed', 'No-Show', 'Cancelled'])],
             'queue_state' => ['sometimes', Rule::in(['Checked In', 'Awaiting Check-In', 'Not Queued', 'Expired'])],
             'date_from' => ['sometimes', 'date'],
             'date_to' => ['sometimes', 'date', 'after_or_equal:date_from'],

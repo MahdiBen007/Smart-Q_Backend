@@ -12,15 +12,19 @@ use App\Enums\TokenStatus;
 use App\Enums\UserRoleName;
 use App\Models\Appointment;
 use App\Models\Branch;
+use App\Models\CheckInRecord;
 use App\Models\Company;
 use App\Models\Customer;
 use App\Models\DailyQueueSession;
+use App\Models\KioskDevice;
 use App\Models\QrCodeToken;
 use App\Models\QueueEntry;
 use App\Models\Service;
 use App\Models\StaffMember;
 use App\Models\User;
 use App\Models\UserRole;
+use App\Support\Dashboard\BookingCodeFormatter;
+use App\Support\Dashboard\OperationalWorkflowService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Hash;
@@ -319,6 +323,79 @@ class DashboardApiTest extends TestCase
             ->assertJsonPath('data.queueEntries.0.customer', 'Queue Monitor Appointment Customer');
     }
 
+    public function test_regular_appointment_is_visible_in_queue_monitor_before_check_in(): void
+    {
+        [$user, $branch, $service, $staff] = $this->createDashboardContext();
+        $token = $this->loginAndReturnToken($user);
+
+        $this->createAppointmentRecord(
+            branch: $branch,
+            service: $service,
+            staff: $staff,
+            customerName: 'Regular Queue Customer',
+            status: AppointmentStatus::Confirmed,
+            appointmentDate: now()->toDateString(),
+            appointmentTime: '11:00:00',
+            customerUserType: 'regular',
+        );
+
+        $this->withToken($token)
+            ->getJson('/api/dashboard/queue-monitor/bootstrap')
+            ->assertOk()
+            ->assertJsonCount(1, 'data.queueEntries')
+            ->assertJsonPath('data.queueEntries.0.customer', 'Regular Queue Customer')
+            ->assertJsonPath('data.queueEntries.0.checkIn', 'Not Arrived');
+    }
+
+    public function test_queue_monitor_bootstrap_exposes_server_grace_countdown_for_awaiting_check_in_entry(): void
+    {
+        [$user, $branch, $service, $staff] = $this->createDashboardContext();
+        $token = $this->loginAndReturnToken($user);
+
+        $appointment = $this->createAppointmentRecord(
+            branch: $branch,
+            service: $service,
+            staff: $staff,
+            customerName: 'Countdown Customer',
+            status: AppointmentStatus::Active,
+            appointmentDate: now()->toDateString(),
+            appointmentTime: '10:30:00',
+        );
+
+        $session = DailyQueueSession::query()->firstOrCreate(
+            [
+                'branch_id' => $branch->getKey(),
+                'service_id' => $service->getKey(),
+                'session_date' => now()->toDateString(),
+            ],
+            [
+                'session_start_time' => '08:00:00',
+                'session_end_time' => '17:00:00',
+                'session_status' => QueueSessionStatus::Live,
+            ]
+        );
+
+        QueueEntry::query()->create([
+            'queue_session_id' => $session->getKey(),
+            'customer_id' => $appointment->customer_id,
+            'queue_position' => 1,
+            'queue_status' => QueueEntryStatus::Serving,
+            'checked_in_at' => null,
+            'service_started_at' => now()->subSeconds(12),
+            'appointment_id' => $appointment->getKey(),
+        ]);
+
+        $response = $this->withToken($token)
+            ->getJson('/api/dashboard/queue-monitor/bootstrap')
+            ->assertOk()
+            ->assertJsonPath('data.queueEntries.0.awaitingCheckIn', true);
+
+        $remainingSeconds = (int) ($response->json('data.queueEntries.0.checkInGraceRemainingSeconds') ?? -1);
+
+        $this->assertGreaterThanOrEqual(10, $remainingSeconds);
+        $this->assertLessThanOrEqual(20, $remainingSeconds);
+    }
+
     public function test_appointment_qr_check_in_creates_queue_entry_and_consumes_token(): void
     {
         [$user, $branch, $service, $staff] = $this->createDashboardContext();
@@ -361,6 +438,380 @@ class DashboardApiTest extends TestCase
         ]);
     }
 
+    public function test_special_needs_appointment_is_not_auto_enqueued_before_check_in(): void
+    {
+        [$user, $branch, $service, $staff] = $this->createDashboardContext();
+        $token = $this->loginAndReturnToken($user);
+
+        $this->createAppointmentRecord(
+            branch: $branch,
+            service: $service,
+            staff: $staff,
+            customerName: 'Special Needs Customer',
+            status: AppointmentStatus::Confirmed,
+            appointmentDate: now()->toDateString(),
+            appointmentTime: '10:00:00',
+            customerUserType: 'special_needs',
+        );
+
+        $this->withToken($token)
+            ->getJson('/api/dashboard/queue-monitor/bootstrap')
+            ->assertOk()
+            ->assertJsonCount(0, 'data.queueEntries');
+    }
+
+    public function test_special_needs_entry_is_hidden_in_queue_monitor_until_check_in(): void
+    {
+        [$user, $branch, $service, $staff] = $this->createDashboardContext();
+        $token = $this->loginAndReturnToken($user);
+
+        $specialAppointment = $this->createAppointmentRecord(
+            branch: $branch,
+            service: $service,
+            staff: $staff,
+            customerName: 'Special Hidden Customer',
+            status: AppointmentStatus::Active,
+            appointmentDate: now()->toDateString(),
+            appointmentTime: '10:00:00',
+            customerUserType: 'special_needs',
+        );
+
+        $session = DailyQueueSession::query()->firstOrCreate(
+            [
+                'branch_id' => $branch->getKey(),
+                'service_id' => $service->getKey(),
+                'session_date' => now()->toDateString(),
+            ],
+            [
+                'session_start_time' => '08:00:00',
+                'session_end_time' => '17:00:00',
+                'session_status' => QueueSessionStatus::Live,
+            ]
+        );
+
+        QueueEntry::query()->create([
+            'queue_session_id' => $session->getKey(),
+            'customer_id' => $specialAppointment->customer_id,
+            'queue_position' => 1,
+            'queue_status' => QueueEntryStatus::Waiting,
+            'checked_in_at' => null,
+            'appointment_id' => $specialAppointment->getKey(),
+        ]);
+
+        $this->withToken($token)
+            ->getJson('/api/dashboard/queue-monitor/bootstrap')
+            ->assertOk()
+            ->assertJsonCount(0, 'data.queueEntries');
+    }
+
+    public function test_special_needs_appointment_code_is_consistent_in_appointments_list(): void
+    {
+        [$user, $branch, $service, $staff] = $this->createDashboardContext();
+        $token = $this->loginAndReturnToken($user);
+
+        $this->createAppointmentRecord(
+            branch: $branch,
+            service: $service,
+            staff: $staff,
+            customerName: 'Special Needs Appointment List',
+            status: AppointmentStatus::Confirmed,
+            appointmentDate: now()->toDateString(),
+            appointmentTime: '11:00:00',
+            customerUserType: 'special_needs',
+        );
+
+        $response = $this->withToken($token)
+            ->getJson('/api/dashboard/appointments')
+            ->assertOk();
+
+        $displayId = $response->json('data.appointments.0.displayId');
+        $this->assertTrue(
+            is_string($displayId) && str_starts_with($displayId, 'SN-'),
+            'Expected appointment display code to start with SN- in appointments list.'
+        );
+    }
+
+    public function test_regular_appointment_code_does_not_use_special_needs_prefix(): void
+    {
+        [$user, $branch, $service, $staff] = $this->createDashboardContext();
+        $token = $this->loginAndReturnToken($user);
+
+        $this->createAppointmentRecord(
+            branch: $branch,
+            service: $service,
+            staff: $staff,
+            customerName: 'Regular Customer Appointment List',
+            status: AppointmentStatus::Confirmed,
+            appointmentDate: now()->toDateString(),
+            appointmentTime: '11:30:00',
+            customerUserType: 'regular',
+        );
+
+        $response = $this->withToken($token)
+            ->getJson('/api/dashboard/appointments')
+            ->assertOk();
+
+        $displayId = $response->json('data.appointments.0.displayId');
+        $this->assertTrue(
+            is_string($displayId) && ! str_starts_with($displayId, 'SN-'),
+            'Regular user booking code must not start with SN-.'
+        );
+    }
+
+    public function test_special_needs_check_in_gets_queue_priority_and_special_code(): void
+    {
+        [$user, $branch, $service, $staff] = $this->createDashboardContext();
+        $token = $this->loginAndReturnToken($user);
+
+        $servingAppointment = $this->createAppointmentRecord(
+            branch: $branch,
+            service: $service,
+            staff: $staff,
+            customerName: 'Serving Customer',
+            status: AppointmentStatus::Active,
+            appointmentDate: now()->toDateString(),
+            appointmentTime: '09:00:00',
+        );
+        $session = DailyQueueSession::query()->firstOrCreate(
+            [
+                'branch_id' => $branch->getKey(),
+                'service_id' => $service->getKey(),
+                'session_date' => now()->toDateString(),
+            ],
+            [
+                'session_start_time' => '08:00:00',
+                'session_end_time' => '17:00:00',
+                'session_status' => QueueSessionStatus::Live,
+            ]
+        );
+
+        $servingEntry = QueueEntry::query()->create([
+            'queue_session_id' => $session->getKey(),
+            'customer_id' => $servingAppointment->customer_id,
+            'queue_position' => 1,
+            'queue_status' => QueueEntryStatus::Serving,
+            'checked_in_at' => now(),
+            'appointment_id' => $servingAppointment->getKey(),
+        ]);
+
+        $waitingAppointment = $this->createAppointmentRecord(
+            branch: $branch,
+            service: $service,
+            staff: $staff,
+            customerName: 'Waiting Customer',
+            status: AppointmentStatus::Active,
+            appointmentDate: now()->toDateString(),
+            appointmentTime: '09:15:00',
+        );
+        $waitingEntry = QueueEntry::query()->create([
+            'queue_session_id' => $session->getKey(),
+            'customer_id' => $waitingAppointment->customer_id,
+            'queue_position' => 2,
+            'queue_status' => QueueEntryStatus::Waiting,
+            'checked_in_at' => now(),
+            'appointment_id' => $waitingAppointment->getKey(),
+        ]);
+
+        $specialAppointment = $this->createAppointmentRecord(
+            branch: $branch,
+            service: $service,
+            staff: $staff,
+            customerName: 'Priority Customer',
+            status: AppointmentStatus::Confirmed,
+            appointmentDate: now()->toDateString(),
+            appointmentTime: '10:00:00',
+            customerUserType: 'special_needs',
+        );
+        $specialToken = $this->createAppointmentQrToken($specialAppointment);
+
+        $this->withToken($token)
+            ->postJson('/api/dashboard/appointments/check-in', [
+                'token_value' => $specialToken->token_value,
+                'result' => CheckInResult::Success->value,
+            ])
+            ->assertOk()
+            ->assertJsonPath('data.appointment.queueState', 'Checked In');
+
+        $specialEntry = QueueEntry::query()
+            ->where('appointment_id', $specialAppointment->getKey())
+            ->firstOrFail();
+
+        $this->assertSame(2, (int) $specialEntry->queue_position);
+        $this->assertSame(QueueEntryStatus::Next->value, $specialEntry->queue_status->value);
+
+        $waitingEntry->refresh();
+        $servingEntry->refresh();
+
+        $this->assertSame(1, (int) $servingEntry->queue_position);
+        $this->assertSame(3, (int) $waitingEntry->queue_position);
+
+        $response = $this->withToken($token)
+            ->getJson('/api/dashboard/queue-monitor/bootstrap')
+            ->assertOk();
+
+        $queueEntries = $response->json('data.queueEntries');
+        $this->assertSame('Priority Customer', $queueEntries[0]['customer'] ?? null);
+        $priorityCode = $queueEntries[0]['ticketId'] ?? '';
+        $this->assertTrue(
+            is_string($priorityCode) && str_starts_with($priorityCode, 'SN-'),
+            'Expected special-needs check-in ticket code to start with SN-.'
+        );
+    }
+
+    public function test_mobile_queue_status_selects_lowest_position_serving_entry(): void
+    {
+        [, $branch, $service] = $this->createDashboardContext();
+        [$mobileUser, $mobileCustomer] = $this->createMobileCustomerContext();
+        $token = $this->loginMobileAndReturnToken($mobileUser);
+
+        $otherCustomer = Customer::query()->create([
+            'full_name' => 'Other Serving Customer',
+            'phone_number' => '+2135'.str_pad((string) random_int(0, 99999999), 8, '0', STR_PAD_LEFT),
+            'email_address' => 'other.serving@example.test',
+        ]);
+
+        $session = DailyQueueSession::query()->create([
+            'branch_id' => $branch->getKey(),
+            'service_id' => $service->getKey(),
+            'session_date' => now()->toDateString(),
+            'session_start_time' => '08:00:00',
+            'session_end_time' => '17:00:00',
+            'session_status' => QueueSessionStatus::Live,
+        ]);
+
+        $myAppointment = Appointment::query()->create([
+            'customer_id' => $mobileCustomer->getKey(),
+            'branch_id' => $branch->getKey(),
+            'service_id' => $service->getKey(),
+            'appointment_date' => now()->toDateString(),
+            'appointment_time' => '09:00:00',
+            'appointment_status' => AppointmentStatus::Active,
+        ]);
+
+        $myEntry = QueueEntry::query()->create([
+            'queue_session_id' => $session->getKey(),
+            'customer_id' => $mobileCustomer->getKey(),
+            'queue_position' => 1,
+            'queue_status' => QueueEntryStatus::Serving,
+            'checked_in_at' => now(),
+            'appointment_id' => $myAppointment->getKey(),
+        ]);
+
+        $otherAppointment = Appointment::query()->create([
+            'customer_id' => $otherCustomer->getKey(),
+            'branch_id' => $branch->getKey(),
+            'service_id' => $service->getKey(),
+            'appointment_date' => now()->toDateString(),
+            'appointment_time' => '09:15:00',
+            'appointment_status' => AppointmentStatus::Active,
+        ]);
+
+        QueueEntry::query()->create([
+            'queue_session_id' => $session->getKey(),
+            'customer_id' => $otherCustomer->getKey(),
+            'queue_position' => 2,
+            'queue_status' => QueueEntryStatus::Serving,
+            'checked_in_at' => now(),
+            'appointment_id' => $otherAppointment->getKey(),
+        ]);
+
+        $expectedCode = BookingCodeFormatter::queueEntryDisplayCode(
+            $myEntry->fresh([
+                'queueSession.branch.company',
+                'queueSession.service',
+                'appointment.customer.user',
+                'appointment.branch.company',
+                'appointment.service',
+                'customer.user',
+            ])
+        );
+
+        $this->withToken($token)
+            ->getJson('/api/mobile/queue/status')
+            ->assertOk()
+            ->assertJsonPath('data.user_ticket', $expectedCode)
+            ->assertJsonPath('data.currently_serving', $expectedCode);
+    }
+
+    public function test_mobile_queue_status_prefers_today_queue_entry_over_stale_previous_day_entry(): void
+    {
+        [, $branch, $service] = $this->createDashboardContext();
+        [$mobileUser, $mobileCustomer] = $this->createMobileCustomerContext();
+        $token = $this->loginMobileAndReturnToken($mobileUser);
+
+        $yesterdaySession = DailyQueueSession::query()->create([
+            'branch_id' => $branch->getKey(),
+            'service_id' => $service->getKey(),
+            'session_date' => now()->subDay()->toDateString(),
+            'session_start_time' => '08:00:00',
+            'session_end_time' => '17:00:00',
+            'session_status' => QueueSessionStatus::Live,
+        ]);
+
+        $yesterdayAppointment = Appointment::query()->create([
+            'customer_id' => $mobileCustomer->getKey(),
+            'branch_id' => $branch->getKey(),
+            'service_id' => $service->getKey(),
+            'appointment_date' => now()->subDay()->toDateString(),
+            'appointment_time' => '10:00:00',
+            'appointment_status' => AppointmentStatus::Active,
+        ]);
+
+        $staleEntry = QueueEntry::query()->create([
+            'queue_session_id' => $yesterdaySession->getKey(),
+            'customer_id' => $mobileCustomer->getKey(),
+            'queue_position' => 1,
+            'queue_status' => QueueEntryStatus::Waiting,
+            'appointment_id' => $yesterdayAppointment->getKey(),
+        ]);
+
+        $staleEntry->forceFill([
+            'updated_at' => now()->addMinute(),
+        ])->save();
+
+        $todaySession = DailyQueueSession::query()->create([
+            'branch_id' => $branch->getKey(),
+            'service_id' => $service->getKey(),
+            'session_date' => now()->toDateString(),
+            'session_start_time' => '08:00:00',
+            'session_end_time' => '17:00:00',
+            'session_status' => QueueSessionStatus::Live,
+        ]);
+
+        $todayAppointment = Appointment::query()->create([
+            'customer_id' => $mobileCustomer->getKey(),
+            'branch_id' => $branch->getKey(),
+            'service_id' => $service->getKey(),
+            'appointment_date' => now()->toDateString(),
+            'appointment_time' => '11:00:00',
+            'appointment_status' => AppointmentStatus::Active,
+        ]);
+
+        $todayEntry = QueueEntry::query()->create([
+            'queue_session_id' => $todaySession->getKey(),
+            'customer_id' => $mobileCustomer->getKey(),
+            'queue_position' => 2,
+            'queue_status' => QueueEntryStatus::Waiting,
+            'appointment_id' => $todayAppointment->getKey(),
+        ]);
+
+        $expectedTodayCode = BookingCodeFormatter::queueEntryDisplayCode(
+            $todayEntry->fresh([
+                'queueSession.branch.company',
+                'queueSession.service',
+                'appointment.customer.user',
+                'appointment.branch.company',
+                'appointment.service',
+                'customer.user',
+            ])
+        );
+
+        $this->withToken($token)
+            ->getJson('/api/mobile/queue/status')
+            ->assertOk()
+            ->assertJsonPath('data.user_ticket', $expectedTodayCode);
+    }
+
     public function test_queue_monitor_bootstrap_only_returns_today_entries_when_today_is_empty(): void
     {
         [$user, $branch, $service, $staff] = $this->createDashboardContext();
@@ -382,6 +833,225 @@ class DashboardApiTest extends TestCase
             ->getJson('/api/dashboard/queue-monitor/bootstrap')
             ->assertOk()
             ->assertJsonCount(0, 'data.queueEntries');
+    }
+
+    public function test_queue_monitor_bootstrap_prunes_orphaned_active_queue_entries(): void
+    {
+        [$user, $branch, $service, $staff] = $this->createDashboardContext();
+        $token = $this->loginAndReturnToken($user);
+
+        $appointment = $this->createAppointmentRecord(
+            branch: $branch,
+            service: $service,
+            staff: $staff,
+            customerName: 'Orphan Entry Customer',
+            status: AppointmentStatus::Active,
+            appointmentDate: now()->toDateString(),
+            appointmentTime: '10:30:00',
+        );
+
+        $entry = $this->createQueueEntryForAppointment($appointment, 1, QueueEntryStatus::Waiting);
+        $appointment->delete();
+
+        $this->withToken($token)
+            ->getJson('/api/dashboard/queue-monitor/bootstrap')
+            ->assertOk()
+            ->assertJsonCount(0, 'data.queueEntries');
+
+        $this->assertDatabaseHas('queue_entries', [
+            'id' => $entry->getKey(),
+            'queue_status' => QueueEntryStatus::Cancelled->value,
+        ]);
+    }
+
+    public function test_queue_monitor_bootstrap_keeps_past_day_checked_in_appointments_uncancelled(): void
+    {
+        [$user, $branch, $service, $staff] = $this->createDashboardContext();
+        $token = $this->loginAndReturnToken($user);
+
+        $appointment = $this->createAppointmentRecord(
+            branch: $branch,
+            service: $service,
+            staff: $staff,
+            customerName: 'Past Day Checked-In Customer',
+            status: AppointmentStatus::Active,
+            appointmentDate: now()->subDay()->toDateString(),
+            appointmentTime: '10:00:00',
+        );
+
+        $entry = $this->createQueueEntryForAppointment($appointment, 1, QueueEntryStatus::Serving);
+
+        $this->withToken($token)
+            ->getJson('/api/dashboard/queue-monitor/bootstrap')
+            ->assertOk();
+
+        $this->assertDatabaseMissing('appointments', [
+            'id' => $appointment->getKey(),
+            'appointment_status' => AppointmentStatus::Cancelled->value,
+        ]);
+        $this->assertDatabaseHas('queue_entries', [
+            'id' => $entry->getKey(),
+            'queue_status' => QueueEntryStatus::Cancelled->value,
+        ]);
+    }
+
+    public function test_skipping_unchecked_in_serving_appointment_requeues_without_cancelling_booking(): void
+    {
+        [$user, $branch, $service, $staff] = $this->createDashboardContext();
+        $token = $this->loginAndReturnToken($user);
+
+        $appointment = $this->createAppointmentRecord(
+            branch: $branch,
+            service: $service,
+            staff: $staff,
+            customerName: 'Late Arrival Customer',
+            status: AppointmentStatus::Active,
+            appointmentDate: now()->toDateString(),
+            appointmentTime: '10:00:00',
+        );
+
+        $qrToken = $this->createAppointmentQrToken($appointment);
+
+        $session = DailyQueueSession::query()->firstOrCreate(
+            [
+                'branch_id' => $branch->getKey(),
+                'service_id' => $service->getKey(),
+                'session_date' => now()->toDateString(),
+            ],
+            [
+                'session_start_time' => '08:00:00',
+                'session_end_time' => '17:00:00',
+                'session_status' => QueueSessionStatus::Live,
+            ]
+        );
+
+        $entry = QueueEntry::query()->create([
+            'queue_session_id' => $session->getKey(),
+            'customer_id' => $appointment->customer_id,
+            'queue_position' => 1,
+            'queue_status' => QueueEntryStatus::Serving,
+            'checked_in_at' => null,
+            'service_started_at' => now()->subSeconds(6),
+            'appointment_id' => $appointment->getKey(),
+        ]);
+
+        $followerAppointment = $this->createAppointmentRecord(
+            branch: $branch,
+            service: $service,
+            staff: $staff,
+            customerName: 'Follower Customer',
+            status: AppointmentStatus::Active,
+            appointmentDate: now()->toDateString(),
+            appointmentTime: '10:15:00',
+        );
+
+        QueueEntry::query()->create([
+            'queue_session_id' => $session->getKey(),
+            'customer_id' => $followerAppointment->customer_id,
+            'queue_position' => 2,
+            'queue_status' => QueueEntryStatus::Waiting,
+            'checked_in_at' => now(),
+            'service_started_at' => null,
+            'appointment_id' => $followerAppointment->getKey(),
+        ]);
+
+        $this->withToken($token)
+            ->patchJson('/api/dashboard/queue-monitor/entries/'.$entry->getKey().'/skip')
+            ->assertOk();
+
+        $this->assertDatabaseMissing('queue_entries', [
+            'id' => $entry->getKey(),
+            'queue_status' => QueueEntryStatus::Cancelled->value,
+        ]);
+        $this->assertDatabaseHas('appointments', [
+            'id' => $appointment->getKey(),
+            'appointment_status' => AppointmentStatus::Active->value,
+        ]);
+        $this->assertDatabaseHas('qr_code_tokens', [
+            'id' => $qrToken->getKey(),
+            'token_status' => TokenStatus::Active->value,
+        ]);
+
+        $updatedEntry = QueueEntry::query()->findOrFail($entry->getKey());
+        $this->assertNotSame(QueueEntryStatus::Cancelled->value, $updatedEntry->queue_status->value);
+        $this->assertSame(2, (int) $updatedEntry->queue_position);
+    }
+
+    public function test_skipping_unchecked_in_next_appointment_does_not_cancel_booking(): void
+    {
+        [$user, $branch, $service, $staff] = $this->createDashboardContext();
+        $token = $this->loginAndReturnToken($user);
+
+        $session = DailyQueueSession::query()->firstOrCreate(
+            [
+                'branch_id' => $branch->getKey(),
+                'service_id' => $service->getKey(),
+                'session_date' => now()->toDateString(),
+            ],
+            [
+                'session_start_time' => '08:00:00',
+                'session_end_time' => '17:00:00',
+                'session_status' => QueueSessionStatus::Live,
+            ]
+        );
+
+        $servingAppointment = $this->createAppointmentRecord(
+            branch: $branch,
+            service: $service,
+            staff: $staff,
+            customerName: 'Serving Base Customer',
+            status: AppointmentStatus::Active,
+            appointmentDate: now()->toDateString(),
+            appointmentTime: '09:00:00',
+        );
+
+        QueueEntry::query()->create([
+            'queue_session_id' => $session->getKey(),
+            'customer_id' => $servingAppointment->customer_id,
+            'queue_position' => 1,
+            'queue_status' => QueueEntryStatus::Serving,
+            'checked_in_at' => now(),
+            'service_started_at' => now()->subMinute(),
+            'appointment_id' => $servingAppointment->getKey(),
+        ]);
+
+        $nextAppointment = $this->createAppointmentRecord(
+            branch: $branch,
+            service: $service,
+            staff: $staff,
+            customerName: 'Next Not Arrived Customer',
+            status: AppointmentStatus::Active,
+            appointmentDate: now()->toDateString(),
+            appointmentTime: '09:15:00',
+        );
+        $nextToken = $this->createAppointmentQrToken($nextAppointment);
+
+        $nextEntry = QueueEntry::query()->create([
+            'queue_session_id' => $session->getKey(),
+            'customer_id' => $nextAppointment->customer_id,
+            'queue_position' => 2,
+            'queue_status' => QueueEntryStatus::Next,
+            'checked_in_at' => null,
+            'service_started_at' => null,
+            'appointment_id' => $nextAppointment->getKey(),
+        ]);
+
+        $this->withToken($token)
+            ->patchJson('/api/dashboard/queue-monitor/entries/'.$nextEntry->getKey().'/skip')
+            ->assertOk();
+
+        $this->assertDatabaseMissing('queue_entries', [
+            'id' => $nextEntry->getKey(),
+            'queue_status' => QueueEntryStatus::Cancelled->value,
+        ]);
+        $this->assertDatabaseHas('appointments', [
+            'id' => $nextAppointment->getKey(),
+            'appointment_status' => AppointmentStatus::Active->value,
+        ]);
+        $this->assertDatabaseHas('qr_code_tokens', [
+            'id' => $nextToken->getKey(),
+            'token_status' => TokenStatus::Active->value,
+        ]);
     }
 
     public function test_walk_ins_bootstrap_only_returns_current_day_walk_ins(): void
@@ -489,6 +1159,52 @@ class DashboardApiTest extends TestCase
         ]);
     }
 
+    public function test_deleting_appointment_with_check_in_history_soft_deletes_without_fk_error(): void
+    {
+        [$user, $branch, $service, $staff] = $this->createDashboardContext();
+        $token = $this->loginAndReturnToken($user);
+
+        $appointment = $this->createAppointmentRecord(
+            branch: $branch,
+            service: $service,
+            staff: $staff,
+            customerName: 'Delete Flow Customer',
+            status: AppointmentStatus::Active,
+            appointmentDate: now()->toDateString(),
+            appointmentTime: '11:30:00',
+        );
+        $qrToken = $this->createAppointmentQrToken($appointment, TokenStatus::Active);
+
+        $kiosk = KioskDevice::query()->create([
+            'branch_id' => $branch->getKey(),
+            'device_identifier' => 'KSK-'.Str::upper(Str::random(8)),
+            'device_location_description' => 'Main Entrance',
+            'device_status' => 'online',
+        ]);
+
+        $checkInRecord = CheckInRecord::query()->create([
+            'qr_token_id' => $qrToken->getKey(),
+            'kiosk_id' => $kiosk->getKey(),
+            'customer_id' => $appointment->customer_id,
+            'check_in_date_time' => now(),
+            'check_in_result' => CheckInResult::Success,
+        ]);
+
+        $this->withToken($token)
+            ->deleteJson('/api/dashboard/appointments/'.$appointment->getKey())
+            ->assertOk()
+            ->assertJsonPath('data.id', $appointment->getKey())
+            ->assertJsonPath('data.deleted', true);
+
+        $this->assertSoftDeleted('appointments', [
+            'id' => $appointment->getKey(),
+        ]);
+        $this->assertDatabaseHas('check_in_records', [
+            'id' => $checkInRecord->getKey(),
+            'qr_token_id' => $qrToken->getKey(),
+        ]);
+    }
+
     public function test_queue_monitor_complete_resequences_entries_without_queue_position_collision(): void
     {
         [$user, $branch, $service, $staff] = $this->createDashboardContext();
@@ -571,19 +1287,75 @@ class DashboardApiTest extends TestCase
             appointmentTime: '10:30:00',
         );
 
-        $this->createQueueEntryForAppointment($appointment, 1, QueueEntryStatus::Serving);
+        $entry = $this->createQueueEntryForAppointment($appointment, 1, QueueEntryStatus::Serving);
+        $expectedTicketId = BookingCodeFormatter::queueEntryDisplayCode(
+            $entry->fresh([
+                'queueSession.branch.company',
+                'queueSession.service',
+                'appointment.customer.user',
+                'appointment.branch.company',
+                'appointment.service',
+                'walkInTicket.customer.user',
+                'customer.user',
+            ])
+        );
 
         $this->withToken($token)
             ->getJson('/api/dashboard/live-queue')
             ->assertOk()
             ->assertJsonPath('data.hasActiveEntry', true)
             ->assertJsonPath('data.queueStatus', 'serving')
+            ->assertJsonPath('data.ticketId', $expectedTicketId)
             ->assertJsonPath('data.ticketPrefix', 'A')
             ->assertJsonPath('data.customerName', 'Live Queue Customer')
             ->assertJsonPath('data.serviceName', $service->service_name)
             ->assertJsonPath('data.branchName', $branch->branch_name)
             ->assertJsonPath('data.queuePosition', 1)
             ->assertJsonPath('data.estimatedWaitMinutes', 0);
+    }
+
+    public function test_live_queue_hides_special_needs_entry_until_check_in(): void
+    {
+        [$user, $branch, $service, $staff] = $this->createDashboardContext();
+        $token = $this->loginAndReturnToken($user);
+
+        $specialAppointment = $this->createAppointmentRecord(
+            branch: $branch,
+            service: $service,
+            staff: $staff,
+            customerName: 'Live Queue Special Hidden',
+            status: AppointmentStatus::Active,
+            appointmentDate: now()->toDateString(),
+            appointmentTime: '10:00:00',
+            customerUserType: 'special_needs',
+        );
+
+        $session = DailyQueueSession::query()->firstOrCreate(
+            [
+                'branch_id' => $branch->getKey(),
+                'service_id' => $service->getKey(),
+                'session_date' => now()->toDateString(),
+            ],
+            [
+                'session_start_time' => '08:00:00',
+                'session_end_time' => '17:00:00',
+                'session_status' => QueueSessionStatus::Live,
+            ]
+        );
+
+        QueueEntry::query()->create([
+            'queue_session_id' => $session->getKey(),
+            'customer_id' => $specialAppointment->customer_id,
+            'queue_position' => 1,
+            'queue_status' => QueueEntryStatus::Next,
+            'checked_in_at' => null,
+            'appointment_id' => $specialAppointment->getKey(),
+        ]);
+
+        $this->withToken($token)
+            ->getJson('/api/dashboard/live-queue')
+            ->assertOk()
+            ->assertJsonPath('data.hasActiveEntry', false);
     }
 
     public function test_service_creation_returns_structured_validation_errors(): void
@@ -1132,6 +1904,18 @@ class DashboardApiTest extends TestCase
         return $cookie->getValue();
     }
 
+    protected function loginMobileAndReturnToken(User $user): string
+    {
+        $response = $this->postJson('/api/mobile/auth/login', [
+            'identifier' => $user->phone_number,
+            'password' => 'password123',
+        ]);
+
+        $response->assertOk();
+
+        return (string) $response->json('data.token');
+    }
+
     protected function createDashboardContext(array $overrides = []): array
     {
         $suffix = Str::lower(Str::random(6));
@@ -1225,8 +2009,29 @@ class DashboardApiTest extends TestCase
         AppointmentStatus $status = AppointmentStatus::Confirmed,
         ?string $appointmentDate = null,
         string $appointmentTime = '09:00:00',
+        ?string $customerUserType = null,
     ): Appointment {
+        $customerUserId = null;
+
+        if ($customerUserType !== null) {
+            $customerUser = User::query()->create([
+                'email' => Str::slug($customerName).'.'.Str::lower(Str::random(4)).'.user@example.test',
+                'phone_number' => '+2135'.str_pad((string) random_int(0, 99999999), 8, '0', STR_PAD_LEFT),
+                'password_hash' => 'password123',
+                'user_type' => $customerUserType,
+                'is_active' => true,
+            ]);
+
+            UserRole::query()->create([
+                'user_id' => $customerUser->getKey(),
+                'role_name' => UserRoleName::Customer,
+            ]);
+
+            $customerUserId = $customerUser->getKey();
+        }
+
         $customer = Customer::query()->create([
+            'user_id' => $customerUserId,
             'full_name' => $customerName,
             'phone_number' => '+2135'.str_pad((string) random_int(0, 99999999), 8, '0', STR_PAD_LEFT),
             'email_address' => Str::slug($customerName).'.'.Str::lower(Str::random(4)).'@example.test',
@@ -1282,5 +2087,31 @@ class DashboardApiTest extends TestCase
             'token_status' => $status,
             'appointment_id' => $appointment->getKey(),
         ]);
+    }
+
+    protected function createMobileCustomerContext(array $overrides = []): array
+    {
+        $suffix = Str::lower(Str::random(6));
+        $user = User::query()->create([
+            'email' => $overrides['user_email'] ?? 'mobile.'.$suffix.'@example.test',
+            'phone_number' => $overrides['user_phone'] ?? '+2135'.str_pad((string) random_int(0, 99999999), 8, '0', STR_PAD_LEFT),
+            'password_hash' => 'password123',
+            'user_type' => $overrides['user_type'] ?? 'regular',
+            'is_active' => true,
+        ]);
+
+        UserRole::query()->create([
+            'user_id' => $user->getKey(),
+            'role_name' => UserRoleName::Customer,
+        ]);
+
+        $customer = Customer::query()->create([
+            'user_id' => $user->getKey(),
+            'full_name' => $overrides['full_name'] ?? 'Mobile Customer',
+            'phone_number' => $user->phone_number,
+            'email_address' => $user->email,
+        ]);
+
+        return [$user, $customer];
     }
 }

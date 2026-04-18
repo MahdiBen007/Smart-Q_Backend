@@ -2,9 +2,7 @@
 
 namespace App\Http\Controllers\Api\Dashboard\WalkIns;
 
-use App\Enums\CheckInResult;
 use App\Enums\TicketStatus;
-use App\Enums\TokenStatus;
 use App\Http\Controllers\Api\Dashboard\DashboardApiController;
 use App\Http\Requests\Api\Dashboard\WalkIns\CheckInWalkInRequest;
 use App\Http\Requests\Api\Dashboard\WalkIns\EscalateWalkInRequest;
@@ -22,7 +20,6 @@ use App\Support\Dashboard\DashboardFormatting;
 use App\Support\Dashboard\OperationalWorkflowService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
-use Illuminate\Support\Str;
 
 class WalkInController extends DashboardApiController
 {
@@ -214,53 +211,12 @@ class WalkInController extends DashboardApiController
     public function checkIn(CheckInWalkInRequest $request, WalkInTicket $ticket)
     {
         $this->ensureCompanyAccess($request, $ticket);
-        $validated = $request->validated();
 
-        $result = $validated['result'] ?? CheckInResult::Success->value;
-        $qrToken = $ticket->qrCodeTokens()->latest()->first();
-
-        if (! $qrToken) {
-            $qrToken = $ticket->qrCodeTokens()->create([
-                'token_value' => Str::upper(Str::random(24)),
-                'expiration_date_time' => now()->addHours(8),
-                'token_status' => TokenStatus::Active,
-            ]);
-        }
-
-        $record = CheckInRecord::query()->create([
-            'qr_token_id' => $qrToken->getKey(),
-            'kiosk_id' => $validated['kiosk_id'] ?? null,
-            'customer_id' => $ticket->customer_id,
-            'check_in_date_time' => now(),
-            'check_in_result' => $result,
-        ]);
-
-        $ticket->queueEntries()->update([
-            'checked_in_at' => now(),
-        ]);
-
-        if ($result === CheckInResult::Success->value) {
-            $ticket->update([
-                'ticket_status' => $ticket->ticket_status === TicketStatus::Serving ? TicketStatus::Serving : TicketStatus::CheckedIn,
-            ]);
-
-            $qrToken->update([
-                'used_date_time' => now(),
-                'token_status' => TokenStatus::Consumed,
-            ]);
-        }
-        $this->invalidateDashboardCache($request, $ticket->branch?->company_id);
-
-        return $this->respond([
-            'ticket' => $this->transformTicket($ticket->fresh($this->ticketRelations())),
-            'checkIn' => [
-                'checkInId' => $record->getKey(),
-                'checkInResult' => match ($result) {
-                    'manual_assist' => 'Manual Assist',
-                    default => DashboardFormatting::titleCase($result),
-                },
-            ],
-        ], 'Walk-in checked in successfully.');
+        return $this->respond(
+            null,
+            'Walk-in tickets do not require check-in. They are treated as on-site by default.',
+            422
+        );
     }
 
     public function escalate(EscalateWalkInRequest $request, WalkInTicket $ticket)
@@ -333,7 +289,7 @@ class WalkInController extends DashboardApiController
             'ticketNumber' => $ticket->ticket_number,
             'ticketSource' => DashboardFormatting::ticketSourceLabel($ticket->ticket_source->value),
             'ticketStatus' => match ($ticket->ticket_status->value) {
-                'checked_in' => 'Checked In',
+                'checked_in' => 'Queued',
                 default => DashboardFormatting::titleCase($ticket->ticket_status->value),
             },
             'createdAt' => $ticket->created_at?->toIso8601String(),

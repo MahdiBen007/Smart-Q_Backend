@@ -24,19 +24,33 @@ class QueueMonitorController extends DashboardApiController
 
     public function bootstrap(Request $request)
     {
+        $this->workflow->runQueueAutomationCycle($this->currentCompanyId($request));
+
         $today = now()->toDateString();
         $shouldRestrictToAssignedBranch = $this->shouldRestrictToAssignedBranch($request);
         $entriesQuery = $this->scopeQueryByCompanyRelation(
             QueueEntry::query()
                 ->with($this->queueEntryRelations())
                 ->whereHas('queueSession', fn ($query) => $query->whereDate('session_date', $today))
+                ->whereNotIn('queue_status', ['completed', 'cancelled'])
                 ->orderBy('queue_position'),
             $request,
             'queueSession.branch'
         );
         $entriesQuery = $this->scopeQueryByAssignedBranchRelation($entriesQuery, $request, 'queueSession.branch');
         $entriesQuery = $this->scopeQueryByAssignedServiceRelation($entriesQuery, $request, 'queueSession', 'service_id');
-        $entries = $entriesQuery->get();
+        $entries = $entriesQuery->lazy(200)
+            ->filter(fn (QueueEntry $entry) => $this->shouldExposeInQueueMonitor($entry))
+            ->sortBy(function (QueueEntry $entry): array {
+                $isCheckedInSpecialNeeds = BookingCodeFormatter::isSpecialNeedsEntry($entry)
+                    && $entry->checked_in_at !== null;
+
+                return [
+                    $isCheckedInSpecialNeeds ? 0 : 1,
+                    (int) $entry->queue_position,
+                ];
+            })
+            ->values();
 
         $branchesQuery = $this->scopeQueryByCompanyColumn(
             Branch::query()
@@ -80,7 +94,6 @@ class QueueMonitorController extends DashboardApiController
 
         return $this->respond([
             'queueEntries' => $entries
-                ->filter(fn (QueueEntry $entry) => ! in_array($entry->queue_status->value, ['completed', 'cancelled'], true))
                 ->map(fn (QueueEntry $entry) => $this->transformQueueEntry($entry))
                 ->values()
                 ->all(),
@@ -159,10 +172,13 @@ class QueueMonitorController extends DashboardApiController
             $entry->loadMissing($this->queueEntryRelations())
         );
         $this->invalidateDashboardCache($request, $entry->queueSession?->branch?->company_id);
+        $message = $updated->walkInTicket
+            ? 'Walk-in ticket cancelled successfully.'
+            : 'Queue entry skipped successfully.';
 
         return $this->respond(
             $this->transformQueueEntry($updated->loadMissing($this->queueEntryRelations())),
-            'Queue entry skipped successfully.'
+            $message
         );
     }
 
@@ -238,23 +254,35 @@ class QueueMonitorController extends DashboardApiController
     protected function queueEntryRelations(): array
     {
         return [
-            'customer',
-            'queueSession.branch',
+            'customer.user',
+            'queueSession.branch.company',
             'queueSession.service',
             'walkInTicket',
-            'walkInTicket.customer',
+            'walkInTicket.customer.user',
             'appointment',
-            'appointment.customer',
+            'appointment.customer.user',
         ];
     }
 
     protected function transformQueueEntry(QueueEntry $entry): array
     {
-        $ticketId = $entry->walkInTicket
-            ? BookingCodeFormatter::walkInShortCode($entry->walkInTicket)
-            : ($entry->appointment
-                ? BookingCodeFormatter::appointmentShortCode($entry->appointment)
-                : 'A-000');
+        $ticketId = BookingCodeFormatter::queueEntryDisplayCode($entry);
+        $isAwaitingCheckIn = $entry->checked_in_at === null
+            && in_array($entry->queue_status->value, ['serving', 'next'], true);
+        $checkInGraceRemainingSeconds = 0;
+
+        if ($isAwaitingCheckIn) {
+            $graceStartedAt = $entry->service_started_at ?? $entry->updated_at ?? $entry->created_at;
+            $elapsedSeconds = $graceStartedAt === null
+                ? 0
+                : max($graceStartedAt->diffInSeconds(now(), false), 0);
+
+            $checkInGraceRemainingSeconds = max(
+                OperationalWorkflowService::ABSENT_CHECK_IN_GRACE_SECONDS - $elapsedSeconds,
+                0
+            );
+        }
+
         $estimatedWait = $entry->queue_status->value === 'serving'
             ? 0
             : max(($entry->queue_position - 1) * ($entry->queueSession?->service?->average_service_duration_minutes ?? 10), 0);
@@ -262,6 +290,11 @@ class QueueMonitorController extends DashboardApiController
             ?? $entry->appointment?->customer?->full_name
             ?? $entry->walkInTicket?->customer?->full_name
             ?? 'Walk-in Customer';
+        $isSpecialNeeds = ($entry->customer?->user?->user_type ?? $entry->appointment?->customer?->user?->user_type ?? $entry->walkInTicket?->customer?->user?->user_type) === BookingCodeFormatter::SPECIAL_NEEDS_TYPE;
+        $displayQueuePosition = $isSpecialNeeds ? null : $entry->queue_position;
+        $displayEta = $isSpecialNeeds
+            ? 'Direct'
+            : DashboardFormatting::minutesLabel($estimatedWait);
 
         return [
             'id' => $entry->getKey(),
@@ -271,17 +304,30 @@ class QueueMonitorController extends DashboardApiController
             'appointmentId' => $entry->appointment_id,
             'walkInTicketId' => $entry->ticket_id,
             'ticketId' => $ticketId,
-            'queuePosition' => $entry->queue_position,
+            'queuePosition' => $displayQueuePosition,
             'customer' => $customerName,
-            'customerType' => 'person',
+            'customerType' => $isSpecialNeeds ? 'special_needs' : 'person',
             'branch' => $entry->queueSession?->branch?->branch_name ?? 'Main Branch',
             'service' => $entry->queueSession?->service?->service_name ?? 'General Service',
-            'checkIn' => $entry->checked_in_at ? DashboardFormatting::shortTime($entry->checked_in_at) : '--',
+            'checkIn' => $entry->checked_in_at
+                ? DashboardFormatting::shortTime($entry->checked_in_at)
+                : ($entry->appointment ? 'Not Arrived' : '--'),
             'startedAt' => $entry->service_started_at ? DashboardFormatting::shortTime($entry->service_started_at) : '--',
             'counter' => null,
             'status' => DashboardFormatting::queueStatusLabel($entry->queue_status->value),
-            'eta' => DashboardFormatting::minutesLabel($estimatedWait),
+            'eta' => $displayEta,
+            'awaitingCheckIn' => $isAwaitingCheckIn,
+            'checkInGraceRemainingSeconds' => $checkInGraceRemainingSeconds,
         ];
+    }
+
+    protected function shouldExposeInQueueMonitor(QueueEntry $entry): bool
+    {
+        if (! BookingCodeFormatter::isSpecialNeedsEntry($entry)) {
+            return true;
+        }
+
+        return $entry->checked_in_at !== null;
     }
 
     protected function sessionStatusFromQueueMonitor(string $status): string

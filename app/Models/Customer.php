@@ -23,6 +23,7 @@ class Customer extends Model
         'full_name',
         'phone_number',
         'email_address',
+        'avatar_url',
     ];
 
     public function user(): BelongsTo

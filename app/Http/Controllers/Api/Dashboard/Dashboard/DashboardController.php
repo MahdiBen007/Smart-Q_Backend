@@ -12,6 +12,7 @@ use App\Models\WalkInTicket;
 use App\Support\Dashboard\BookingCodeFormatter;
 use App\Support\Dashboard\DashboardFormatting;
 use App\Support\Dashboard\DashboardMetricsService;
+use App\Support\Dashboard\OperationalWorkflowService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 
@@ -127,15 +128,21 @@ class DashboardController extends DashboardApiController
         $entryQuery = $this->scopeQueryByCompanyRelation(
             QueueEntry::query()
                 ->with([
-                    'customer:id,full_name',
-                    'appointment.customer:id,full_name',
-                    'appointment.branch:id,branch_name',
+                    'customer:id,user_id,full_name',
+                    'customer.user:id,user_type',
+                    'appointment.customer:id,user_id,full_name',
+                    'appointment.customer.user:id,user_type',
+                    'appointment.branch:id,company_id,branch_name',
+                    'appointment.branch.company:id,company_name',
                     'appointment.service:id,service_name,average_service_duration_minutes',
-                    'queueSession.branch:id,branch_name',
+                    'queueSession.branch:id,company_id,branch_name',
+                    'queueSession.branch.company:id,company_name',
                     'queueSession.service:id,service_name,average_service_duration_minutes',
                     'walkInTicket:id,ticket_number,customer_id,branch_id,service_id',
-                    'walkInTicket.customer:id,full_name',
-                    'walkInTicket.branch:id,branch_name',
+                    'walkInTicket.customer:id,user_id,full_name',
+                    'walkInTicket.customer.user:id,user_type',
+                    'walkInTicket.branch:id,company_id,branch_name',
+                    'walkInTicket.branch.company:id,company_name',
                     'walkInTicket.service:id,service_name,average_service_duration_minutes',
                 ])
                 ->whereHas('queueSession', fn ($query) => $query->whereDate('session_date', today()))
@@ -156,12 +163,15 @@ class DashboardController extends DashboardApiController
             'queueSession.branch'
         );
         $entryQuery = $this->scopeQueryByAssignedServiceRelation($entryQuery, $request, 'queueSession', 'service_id');
-        $entry = $entryQuery->first();
+        $entry = $entryQuery->lazy(100)->first(
+            fn (QueueEntry $candidate) => $this->shouldExposeInLiveQueue($candidate)
+        );
 
         if (! $entry) {
             return $this->respond([
                 'hasActiveEntry' => false,
                 'queueStatus' => null,
+                'ticketId' => '--',
                 'ticketPrefix' => 'W',
                 'ticketNumber' => 0,
                 'ticketStart' => 0,
@@ -173,6 +183,8 @@ class DashboardController extends DashboardApiController
                 'queuePositionSuffix' => 'in queue',
                 'estimatedWaitMinutes' => 0,
                 'estimatedWaitStart' => 0,
+                'awaitingCheckIn' => false,
+                'checkInGraceRemainingSeconds' => 0,
             ]);
         }
 
@@ -189,17 +201,34 @@ class DashboardController extends DashboardApiController
         $ticketNumber = $entry->walkInTicket
             ? (int) $entry->walkInTicket->ticket_number
             : ($entry->appointment
-                ? BookingCodeFormatter::appointmentReferenceNumber((string) $entry->appointment->getKey())
+                ? BookingCodeFormatter::appointmentReferenceNumber($entry->appointment)
                 : $entry->queue_position);
+        $ticketId = BookingCodeFormatter::queueEntryDisplayCode($entry);
+        $isSpecialNeeds = ($entry->customer?->user?->user_type ?? $entry->appointment?->customer?->user?->user_type) === BookingCodeFormatter::SPECIAL_NEEDS_TYPE;
         $serviceDurationMinutes = max((int) ($service?->average_service_duration_minutes ?? 10), 1);
         $estimatedWait = $entry->queue_status->value === QueueEntryStatus::Serving->value
             ? 0
             : max(($entry->queue_position - 1) * $serviceDurationMinutes, 0);
+        $isAwaitingCheckIn = $entry->checked_in_at === null
+            && in_array($entry->queue_status->value, [QueueEntryStatus::Serving->value, QueueEntryStatus::Next->value], true);
+        $checkInGraceRemainingSeconds = 0;
+
+        if ($isAwaitingCheckIn) {
+            $graceStartedAt = $entry->service_started_at ?? $entry->updated_at ?? $entry->created_at;
+            $elapsedSeconds = $graceStartedAt === null
+                ? 0
+                : max($graceStartedAt->diffInSeconds(now(), false), 0);
+            $checkInGraceRemainingSeconds = max(
+                OperationalWorkflowService::ABSENT_CHECK_IN_GRACE_SECONDS - $elapsedSeconds,
+                0
+            );
+        }
 
         return $this->respond([
             'hasActiveEntry' => true,
             'queueStatus' => $entry->queue_status->value,
-            'ticketPrefix' => $entry->appointment_id ? 'A' : 'W',
+            'ticketId' => $ticketId,
+            'ticketPrefix' => $isSpecialNeeds ? BookingCodeFormatter::SPECIAL_NEEDS_CODE_PREFIX : ($entry->appointment_id ? 'A' : 'W'),
             'ticketNumber' => $ticketNumber,
             'ticketStart' => max($ticketNumber - 3, 0),
             'customerName' => $customerName,
@@ -210,6 +239,8 @@ class DashboardController extends DashboardApiController
             'queuePositionSuffix' => 'in queue',
             'estimatedWaitMinutes' => $estimatedWait,
             'estimatedWaitStart' => max($estimatedWait - 5, 0),
+            'awaitingCheckIn' => $isAwaitingCheckIn,
+            'checkInGraceRemainingSeconds' => $checkInGraceRemainingSeconds,
         ]);
     }
 
@@ -277,6 +308,15 @@ class DashboardController extends DashboardApiController
             'tagType' => $tagType,
             'color' => $color,
         ];
+    }
+
+    protected function shouldExposeInLiveQueue(QueueEntry $entry): bool
+    {
+        if (! BookingCodeFormatter::isSpecialNeedsEntry($entry)) {
+            return true;
+        }
+
+        return $entry->checked_in_at !== null;
     }
 
     protected function changeLabel(int $current, int $previous, bool $inverse = false): string

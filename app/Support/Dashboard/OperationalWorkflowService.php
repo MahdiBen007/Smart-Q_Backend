@@ -4,6 +4,8 @@ namespace App\Support\Dashboard;
 
 use App\Enums\CheckInResult;
 use App\Enums\AppointmentStatus;
+use App\Enums\NotificationChannel;
+use App\Enums\NotificationDeliveryStatus;
 use App\Enums\QueueEntryStatus;
 use App\Enums\QueueSessionStatus;
 use App\Enums\TicketSource;
@@ -14,31 +16,255 @@ use App\Models\Branch;
 use App\Models\CheckInRecord;
 use App\Models\Customer;
 use App\Models\DailyQueueSession;
+use App\Models\Notification;
 use App\Models\QrCodeToken;
 use App\Models\QueueEntry;
 use App\Models\Service;
 use App\Models\WalkInTicket;
+use Carbon\CarbonInterface;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use Throwable;
 
 class OperationalWorkflowService
 {
+    public const ABSENT_CHECK_IN_GRACE_SECONDS = 30;
+
+    public function enqueueTodayAppointment(Appointment $appointment): ?QueueEntry
+    {
+        if (! $appointment->appointment_date?->isToday()) {
+            return null;
+        }
+
+        if (
+            in_array(
+                $appointment->appointment_status->value,
+                [AppointmentStatus::Cancelled->value, AppointmentStatus::NoShow->value],
+                true
+            )
+        ) {
+            return null;
+        }
+
+        $appointment->loadMissing(['branch', 'service']);
+
+        return $this->activateAppointmentQueueEntry($appointment, markCheckedIn: false);
+    }
+
+    public function runQueueAutomationCycle(
+        ?string $companyId = null,
+        int $absentGraceSeconds = self::ABSENT_CHECK_IN_GRACE_SECONDS,
+    ): array {
+        if (! app()->environment('testing')) {
+            $automationScope = $companyId ?? 'global';
+            $throttleKey = "dashboard:queue-automation:{$automationScope}";
+
+            try {
+                if (! Cache::add($throttleKey, now()->timestamp, now()->addSeconds(15))) {
+                    return [
+                        'synced' => 0,
+                        'requeued' => 0,
+                        'pruned' => 0,
+                        'cancelled' => 0,
+                    ];
+                }
+            } catch (Throwable) {
+                // Continue without cache throttling when cache backend is unavailable.
+            }
+        }
+
+        $synced = $this->syncTodaysAppointmentsToQueue($companyId);
+        $requeued = 0;
+        $pruned = $this->pruneInvalidAppointmentQueueEntries($companyId);
+        $cancelled = $this->cancelUnattendedPastAppointments($companyId);
+
+        return [
+            'synced' => $synced,
+            'requeued' => $requeued,
+            'pruned' => $pruned,
+            'cancelled' => $cancelled,
+        ];
+    }
+
+    public function syncTodaysAppointmentsToQueue(?string $companyId = null): int
+    {
+        $today = now()->toDateString();
+        $appointmentsQuery = Appointment::query()
+            ->with(['branch', 'service', 'customer.user:id,user_type'])
+            ->whereDate('appointment_date', $today)
+            ->whereIn('appointment_status', [
+                AppointmentStatus::Pending->value,
+                AppointmentStatus::Confirmed->value,
+                AppointmentStatus::Active->value,
+            ])
+            ->whereDoesntHave('queueEntries', function ($query) {
+                $query->where('queue_status', QueueEntryStatus::Completed->value);
+            });
+
+        if ($companyId !== null) {
+            $appointmentsQuery->whereHas('branch', fn ($query) => $query->where('company_id', $companyId));
+        }
+
+        $createdCount = 0;
+        $appointments = $appointmentsQuery->get();
+
+        foreach ($appointments as $appointment) {
+            if ($this->isSpecialNeedsAppointment($appointment)) {
+                continue;
+            }
+
+            $activeQueueEntryExists = QueueEntry::query()
+                ->where('appointment_id', $appointment->getKey())
+                ->whereNotIn('queue_status', [QueueEntryStatus::Completed, QueueEntryStatus::Cancelled])
+                ->exists();
+
+            if ($activeQueueEntryExists) {
+                continue;
+            }
+
+            $this->enqueueTodayAppointment($appointment);
+            $createdCount++;
+        }
+
+        return $createdCount;
+    }
+
+    public function requeueAbsentServingAppointments(
+        ?string $companyId = null,
+        int $absentGraceSeconds = self::ABSENT_CHECK_IN_GRACE_SECONDS,
+    ): int {
+        // Manual-first policy: queue repositioning for absent users is performed by staff action.
+        return 0;
+    }
+
+    public function cancelUnattendedPastAppointments(
+        ?string $companyId = null,
+        ?CarbonInterface $referenceTime = null,
+    ): int {
+        $today = ($referenceTime ?? now())->toDateString();
+        $appointmentsQuery = Appointment::query()
+            ->whereDate('appointment_date', '<', $today)
+            ->whereIn('appointment_status', [
+                AppointmentStatus::Pending->value,
+                AppointmentStatus::Confirmed->value,
+                AppointmentStatus::Active->value,
+            ])
+            ->whereDoesntHave('queueEntries', fn ($query) => $query->whereNotNull('checked_in_at'));
+
+        if ($companyId !== null) {
+            $appointmentsQuery->whereHas('branch', fn ($query) => $query->where('company_id', $companyId));
+        }
+
+        $cancelled = 0;
+        $appointmentsQuery
+            ->with('qrCodeTokens')
+            ->chunk(200, function (Collection $appointments) use (&$cancelled): void {
+                foreach ($appointments as $appointment) {
+                    $appointment->update([
+                        'appointment_status' => AppointmentStatus::Cancelled,
+                    ]);
+
+                    $this->cancelAppointmentQueueEntries($appointment);
+
+                    $appointment->qrCodeTokens()
+                        ->where('token_status', TokenStatus::Active->value)
+                        ->update([
+                            'token_status' => TokenStatus::Expired,
+                        ]);
+
+                    $cancelled++;
+                }
+            });
+
+        return $cancelled;
+    }
+
+    public function pruneInvalidAppointmentQueueEntries(?string $companyId = null): int
+    {
+        $entriesQuery = QueueEntry::query()
+            ->with(['appointment', 'walkInTicket', 'queueSession.branch'])
+            ->whereNotIn('queue_status', [QueueEntryStatus::Completed, QueueEntryStatus::Cancelled]);
+
+        if ($companyId !== null) {
+            $entriesQuery->whereHas('queueSession.branch', fn ($query) => $query->where('company_id', $companyId));
+        }
+
+        $pruned = 0;
+        $sessions = [];
+
+        $entriesQuery->chunk(200, function (Collection $entries) use (&$sessions, &$pruned): void {
+            foreach ($entries as $entry) {
+                $appointment = $entry->appointment;
+                $walkInTicket = $entry->walkInTicket;
+                $isAppointmentEntry = $entry->appointment_id !== null;
+                $isWalkInEntry = $entry->ticket_id !== null;
+
+                $isInvalid = (! $isAppointmentEntry && ! $isWalkInEntry)
+                    || (
+                        $isAppointmentEntry
+                        && (
+                            ! $appointment
+                            || in_array(
+                                $appointment->appointment_status->value,
+                                [AppointmentStatus::Cancelled->value, AppointmentStatus::NoShow->value],
+                                true
+                            )
+                            || ! $appointment->appointment_date?->isToday()
+                        )
+                    )
+                    || ($isWalkInEntry && ! $walkInTicket);
+
+                if (! $isInvalid) {
+                    continue;
+                }
+
+                $session = $entry->queueSession;
+                if (! $session) {
+                    continue;
+                }
+
+                $entry->update([
+                    'queue_status' => QueueEntryStatus::Cancelled,
+                    'service_started_at' => null,
+                ]);
+
+                $this->archiveQueueEntry($session, $entry, clearServiceStartedAt: true);
+                $sessions[$session->getKey()] = $session;
+                $pruned++;
+            }
+        });
+
+        foreach ($sessions as $session) {
+            $this->normalizeActiveEntries($session);
+        }
+
+        return $pruned;
+    }
+
     public function ensureSession(Branch $branch, Service $service): DailyQueueSession
     {
-        return DailyQueueSession::query()->firstOrCreate(
-            [
-                'branch_id' => $branch->getKey(),
-                'service_id' => $service->getKey(),
-                'session_date' => now()->toDateString(),
-            ],
-            [
-                'session_start_time' => '08:00:00',
-                'session_end_time' => '18:00:00',
-                'session_status' => QueueSessionStatus::Live,
-            ],
-        );
+        $today = now()->toDateString();
+        $existing = DailyQueueSession::query()
+            ->where('branch_id', $branch->getKey())
+            ->where('service_id', $service->getKey())
+            ->whereDate('session_date', $today)
+            ->first();
+
+        if ($existing) {
+            return $existing;
+        }
+
+        return DailyQueueSession::query()->create([
+            'branch_id' => $branch->getKey(),
+            'service_id' => $service->getKey(),
+            'session_date' => $today,
+            'session_start_time' => '08:00:00',
+            'session_end_time' => '18:00:00',
+            'session_status' => QueueSessionStatus::Live,
+        ]);
     }
 
     public function checkInAppointmentToken(
@@ -207,13 +433,12 @@ class OperationalWorkflowService
                 ->pluck('id')
                 ->all();
 
-            $entry->forceFill([
-                'checked_in_at' => $entry->checked_in_at ?? now(),
-            ])->save();
-
             $this->resequence($session, $activeIds, $entry->getKey());
 
-            return $entry->refresh();
+            $updatedEntry = $entry->refresh();
+            $this->notifyQueueEntryCalled($updatedEntry);
+
+            return $updatedEntry;
         });
     }
 
@@ -228,6 +453,26 @@ class OperationalWorkflowService
             );
 
             $session = $entry->queueSession()->firstOrFail();
+
+            if ($entry->walkInTicket) {
+                $entry->update([
+                    'queue_status' => QueueEntryStatus::Cancelled,
+                    'service_started_at' => null,
+                ]);
+
+                $entry->walkInTicket->update([
+                    'ticket_status' => TicketStatus::Escalated,
+                ]);
+
+                $this->archiveQueueEntry($session, $entry, clearServiceStartedAt: true);
+                $this->normalizeActiveEntries($session);
+
+                $updatedEntry = $entry->refresh();
+                $this->notifyQueueEntrySkipped($updatedEntry);
+
+                return $updatedEntry;
+            }
+
             $ordered = $this->activeEntries($session)
                 ->reject(fn (QueueEntry $item) => $item->getKey() === $entry->getKey())
                 ->push($entry)
@@ -240,7 +485,10 @@ class OperationalWorkflowService
 
             $this->resequence($session, $ordered->pluck('id')->all(), $servingId);
 
-            return $entry->refresh();
+            $updatedEntry = $entry->refresh();
+            $this->notifyQueueEntrySkipped($updatedEntry);
+
+            return $updatedEntry;
         });
     }
 
@@ -271,7 +519,10 @@ class OperationalWorkflowService
             $remaining = $this->activeEntries($session)->pluck('id')->all();
             $this->resequence($session, $remaining, $remaining[0] ?? null);
 
-            return $entry->refresh();
+            $updatedEntry = $entry->refresh();
+            $this->notifyQueueEntryCompleted($updatedEntry);
+
+            return $updatedEntry;
         });
     }
 
@@ -285,6 +536,8 @@ class OperationalWorkflowService
                 ->get();
 
             $sessions = [];
+            $beforePositionsBySession = [];
+            $cancelledEntryIdsBySession = [];
 
             foreach ($entries as $entry) {
                 $session = $entry->queueSession;
@@ -293,17 +546,29 @@ class OperationalWorkflowService
                     continue;
                 }
 
+                $sessionKey = $session->getKey();
+                if (! isset($beforePositionsBySession[$sessionKey])) {
+                    $beforePositionsBySession[$sessionKey] = $this->activeEntryPositionsSnapshot($session);
+                    $cancelledEntryIdsBySession[$sessionKey] = [];
+                }
+
                 $entry->update([
                     'queue_status' => QueueEntryStatus::Cancelled,
                     'service_started_at' => null,
                 ]);
 
                 $this->archiveQueueEntry($session, $entry, clearServiceStartedAt: true);
-                $sessions[$session->getKey()] = $session;
+                $cancelledEntryIdsBySession[$sessionKey][] = $entry->getKey();
+                $sessions[$sessionKey] = $session;
             }
 
-            foreach ($sessions as $session) {
+            foreach ($sessions as $sessionKey => $session) {
                 $this->normalizeActiveEntries($session);
+                $this->notifyEntriesPromotedByCancellation(
+                    $session,
+                    $beforePositionsBySession[$sessionKey] ?? [],
+                    $cancelledEntryIdsBySession[$sessionKey] ?? [],
+                );
             }
         });
     }
@@ -367,47 +632,69 @@ class OperationalWorkflowService
         Appointment $appointment,
         bool $markCheckedIn,
     ): QueueEntry {
-        $existing = QueueEntry::query()
-            ->where('appointment_id', $appointment->getKey())
-            ->whereNotIn('queue_status', [QueueEntryStatus::Completed, QueueEntryStatus::Cancelled])
-            ->first();
+        return DB::transaction(function () use ($appointment, $markCheckedIn) {
+            $isSpecialNeeds = $this->isSpecialNeedsAppointment($appointment);
+            $existing = QueueEntry::query()
+                ->lockForUpdate()
+                ->where('appointment_id', $appointment->getKey())
+                ->whereNotIn('queue_status', [QueueEntryStatus::Completed, QueueEntryStatus::Cancelled])
+                ->first();
 
-        if ($existing) {
-            if ($markCheckedIn && ! $existing->checked_in_at) {
-                $existing->forceFill([
-                    'checked_in_at' => now(),
-                ])->save();
+            if ($existing) {
+                if ($markCheckedIn && ! $existing->checked_in_at) {
+                    $existing->forceFill([
+                        'checked_in_at' => now(),
+                    ])->save();
+                }
+
+                if (
+                    $markCheckedIn
+                    && ! in_array($appointment->appointment_status, [AppointmentStatus::Cancelled, AppointmentStatus::NoShow], true)
+                ) {
+                    $appointment->update([
+                        'appointment_status' => AppointmentStatus::Active,
+                    ]);
+                }
+
+                if ($markCheckedIn && $isSpecialNeeds && $existing->queueSession) {
+                    $this->prioritizeCheckedInEntry($existing->queueSession, $existing->getKey());
+                }
+
+                return $existing->refresh();
             }
 
-            if (! in_array($appointment->appointment_status, [AppointmentStatus::Cancelled, AppointmentStatus::NoShow], true)) {
+            $session = $this->ensureSession($appointment->branch, $appointment->service);
+            $nextPosition = (int) QueueEntry::query()
+                ->where('queue_session_id', $session->getKey())
+                ->lockForUpdate()
+                ->max('queue_position') + 1;
+
+            $entry = QueueEntry::create([
+                'queue_session_id' => $session->getKey(),
+                'customer_id' => $appointment->customer_id,
+                'queue_position' => $nextPosition,
+                'queue_status' => QueueEntryStatus::Waiting,
+                'checked_in_at' => $markCheckedIn ? now() : null,
+                'appointment_id' => $appointment->getKey(),
+            ]);
+
+            if (
+                $markCheckedIn
+                && ! in_array($appointment->appointment_status, [AppointmentStatus::Cancelled, AppointmentStatus::NoShow], true)
+            ) {
                 $appointment->update([
                     'appointment_status' => AppointmentStatus::Active,
                 ]);
             }
 
-            return $existing->refresh();
-        }
+            if ($markCheckedIn && $isSpecialNeeds) {
+                $this->prioritizeCheckedInEntry($session, $entry->getKey());
+            } else {
+                $this->appendQueuedEntry($session, $entry->getKey());
+            }
 
-        $session = $this->ensureSession($appointment->branch, $appointment->service);
-
-        $entry = QueueEntry::create([
-            'queue_session_id' => $session->getKey(),
-            'customer_id' => $appointment->customer_id,
-            'queue_position' => $this->nextQueuePosition($session),
-            'queue_status' => QueueEntryStatus::Waiting,
-            'checked_in_at' => $markCheckedIn ? now() : null,
-            'appointment_id' => $appointment->getKey(),
-        ]);
-
-        if (! in_array($appointment->appointment_status, [AppointmentStatus::Cancelled, AppointmentStatus::NoShow], true)) {
-            $appointment->update([
-                'appointment_status' => AppointmentStatus::Active,
-            ]);
-        }
-
-        $this->appendQueuedEntry($session, $entry->getKey());
-
-        return $entry->refresh();
+            return $entry->refresh();
+        });
     }
 
     protected function appendQueuedEntry(DailyQueueSession $session, string $newEntryId): void
@@ -427,6 +714,26 @@ class OperationalWorkflowService
         }
 
         $this->resequenceWithoutServing($session, $orderedIds, $currentNextId ?: $newEntryId);
+    }
+
+    protected function prioritizeCheckedInEntry(DailyQueueSession $session, string $entryId): void
+    {
+        $activeEntries = $this->activeEntries($session);
+        $servingId = $activeEntries->firstWhere('queue_status', QueueEntryStatus::Serving)?->getKey();
+        $orderedIds = $activeEntries->pluck('id')->all();
+        $orderedIds = array_values(array_filter($orderedIds, fn (string $id): bool => $id !== $entryId));
+
+        if ($servingId) {
+            $servingIndex = array_search($servingId, $orderedIds, true);
+            $insertAt = is_int($servingIndex) ? $servingIndex + 1 : 0;
+            array_splice($orderedIds, $insertAt, 0, [$entryId]);
+            $this->resequence($session, $orderedIds, $servingId);
+
+            return;
+        }
+
+        array_unshift($orderedIds, $entryId);
+        $this->resequenceWithoutServing($session, $orderedIds, $entryId);
     }
 
     protected function activeEntries(DailyQueueSession $session): Collection
@@ -474,9 +781,7 @@ class OperationalWorkflowService
                 $entry->walkInTicket->update([
                     'ticket_status' => match ($status) {
                         QueueEntryStatus::Serving => TicketStatus::Serving,
-                        QueueEntryStatus::Next, QueueEntryStatus::Waiting => $entry->checked_in_at
-                            ? TicketStatus::CheckedIn
-                            : TicketStatus::Queued,
+                        QueueEntryStatus::Next, QueueEntryStatus::Waiting => TicketStatus::Queued,
                         default => TicketStatus::Queued,
                     },
                 ]);
@@ -513,9 +818,7 @@ class OperationalWorkflowService
 
             if ($entry->walkInTicket) {
                 $entry->walkInTicket->update([
-                    'ticket_status' => $entry->checked_in_at
-                        ? TicketStatus::CheckedIn
-                        : TicketStatus::Queued,
+                    'ticket_status' => TicketStatus::Queued,
                 ]);
             }
         }
@@ -542,6 +845,7 @@ class OperationalWorkflowService
 
         $this->resequenceWithoutServing($session, $orderedIds, $nextId);
     }
+
 
     protected function archiveQueueEntry(
         DailyQueueSession $session,
@@ -585,6 +889,31 @@ class OperationalWorkflowService
         return $entries;
     }
 
+    protected function shiftArchivedEntriesOutOfRange(DailyQueueSession $session): void
+    {
+        $archivedEntries = QueueEntry::query()
+            ->lockForUpdate()
+            ->where('queue_session_id', $session->getKey())
+            ->whereIn('queue_status', [QueueEntryStatus::Completed, QueueEntryStatus::Cancelled])
+            ->orderBy('queue_position')
+            ->get();
+
+        if ($archivedEntries->isEmpty()) {
+            return;
+        }
+
+        $basePosition = ((int) QueueEntry::query()
+            ->where('queue_session_id', $session->getKey())
+            ->lockForUpdate()
+            ->max('queue_position')) + 1;
+
+        foreach ($archivedEntries as $offset => $entry) {
+            $entry->update([
+                'queue_position' => $basePosition + $offset,
+            ]);
+        }
+    }
+
     protected function lockQueueEntry(QueueEntry $entry): QueueEntry
     {
         return QueueEntry::query()
@@ -612,6 +941,180 @@ class OperationalWorkflowService
         ]);
     }
 
+    protected function notifyQueueEntryCalled(QueueEntry $entry): void
+    {
+        $entry->loadMissing(['queueSession.branch', 'queueSession.service', 'customer.user']);
+
+        $userId = $this->resolveQueueEntryUserId($entry);
+        if ($userId === null) {
+            return;
+        }
+
+        $branchName = $entry->queueSession?->branch?->branch_name ?? 'branch';
+        $serviceName = $entry->queueSession?->service?->service_name ?? 'service';
+        $queuePosition = max((int) $entry->queue_position, 1);
+
+        $this->dispatchMobileQueueNotification(
+            userId: $userId,
+            title: 'Your turn is now',
+            description: "Please proceed to {$branchName} for {$serviceName}.",
+            tone: 'success',
+            messageContent: "Your ticket is being served now. Queue position: {$queuePosition}.",
+            actionPath: '/live-queue-status',
+        );
+    }
+
+    protected function notifyQueueEntrySkipped(QueueEntry $entry): void
+    {
+        $entry->loadMissing(['queueSession.branch', 'queueSession.service', 'customer.user']);
+
+        $userId = $this->resolveQueueEntryUserId($entry);
+        if ($userId === null) {
+            return;
+        }
+
+        $branchName = $entry->queueSession?->branch?->branch_name ?? 'branch';
+        $serviceName = $entry->queueSession?->service?->service_name ?? 'service';
+        $queuePosition = max((int) $entry->queue_position, 1);
+        $message = $entry->queue_status === QueueEntryStatus::Cancelled
+            ? "Your queue entry at {$branchName} for {$serviceName} was cancelled by staff."
+            : "Your turn was skipped. You were moved to position {$queuePosition}.";
+
+        $this->dispatchMobileQueueNotification(
+            userId: $userId,
+            title: 'Queue update',
+            description: "Update for your {$serviceName} booking at {$branchName}.",
+            tone: 'warning',
+            messageContent: $message,
+            actionPath: '/live-queue-status',
+        );
+    }
+
+    protected function notifyQueueEntryCompleted(QueueEntry $entry): void
+    {
+        $entry->loadMissing(['queueSession.branch', 'queueSession.service', 'customer.user']);
+
+        $userId = $this->resolveQueueEntryUserId($entry);
+        if ($userId === null) {
+            return;
+        }
+
+        $branchName = $entry->queueSession?->branch?->branch_name ?? 'branch';
+        $serviceName = $entry->queueSession?->service?->service_name ?? 'service';
+
+        $this->dispatchMobileQueueNotification(
+            userId: $userId,
+            title: 'Service completed',
+            description: "Your {$serviceName} request at {$branchName} was completed.",
+            tone: 'success',
+            messageContent: "Your queue request for {$serviceName} has been completed by staff.",
+            actionPath: '/my-tickets',
+        );
+    }
+
+    protected function resolveQueueEntryUserId(QueueEntry $entry): ?string
+    {
+        $userId = $entry->customer?->user_id
+            ?? $entry->appointment?->customer?->user_id
+            ?? $entry->walkInTicket?->customer?->user_id;
+
+        if (! is_string($userId) || trim($userId) === '') {
+            return null;
+        }
+
+        return $userId;
+    }
+
+    protected function dispatchMobileQueueNotification(
+        string $userId,
+        string $title,
+        string $description,
+        string $tone,
+        string $messageContent,
+        string $actionPath,
+    ): void {
+        Notification::query()->create([
+            'user_id' => $userId,
+            'notification_type' => 'queue',
+            'title' => $title,
+            'description' => $description,
+            'tone' => $tone,
+            'action_path' => $actionPath,
+            'occurred_at' => now(),
+            'notification_channel' => NotificationChannel::InApp,
+            'delivery_status' => NotificationDeliveryStatus::Sent,
+            'message_content' => $messageContent,
+            'read_at' => null,
+        ]);
+    }
+
+    protected function activeEntryPositionsSnapshot(DailyQueueSession $session): array
+    {
+        return $this->activeEntries($session)
+            ->mapWithKeys(fn (QueueEntry $entry) => [$entry->getKey() => (int) $entry->queue_position])
+            ->all();
+    }
+
+    protected function notifyEntriesPromotedByCancellation(
+        DailyQueueSession $session,
+        array $beforePositions,
+        array $excludedEntryIds = [],
+    ): void {
+        if ($beforePositions === []) {
+            return;
+        }
+
+        $excluded = array_values(array_filter($excludedEntryIds, fn ($id) => is_string($id) && $id !== ''));
+
+        $activeEntries = QueueEntry::query()
+            ->with([
+                'queueSession.branch',
+                'queueSession.service',
+                'customer.user',
+                'appointment.customer.user',
+                'walkInTicket.customer.user',
+            ])
+            ->where('queue_session_id', $session->getKey())
+            ->whereNotIn('queue_status', [QueueEntryStatus::Completed->value, QueueEntryStatus::Cancelled->value])
+            ->orderBy('queue_position')
+            ->get();
+
+        foreach ($activeEntries as $entry) {
+            $entryId = $entry->getKey();
+            if (
+                in_array($entryId, $excluded, true)
+                || ! isset($beforePositions[$entryId])
+            ) {
+                continue;
+            }
+
+            $oldPosition = (int) $beforePositions[$entryId];
+            $newPosition = max((int) $entry->queue_position, 1);
+
+            if ($newPosition >= $oldPosition) {
+                continue;
+            }
+
+            $userId = $this->resolveQueueEntryUserId($entry);
+            if ($userId === null) {
+                continue;
+            }
+
+            $branchName = $entry->queueSession?->branch?->branch_name ?? 'branch';
+            $serviceName = $entry->queueSession?->service?->service_name ?? 'service';
+            $bookingCode = BookingCodeFormatter::queueEntryDisplayCode($entry);
+
+            $this->dispatchMobileQueueNotification(
+                userId: $userId,
+                title: 'Queue position updated',
+                description: "Booking {$bookingCode} for {$serviceName} at {$branchName} moved forward.",
+                tone: 'info',
+                messageContent: "Booking code {$bookingCode}: a booking ahead was cancelled. Your position changed from {$oldPosition} to {$newPosition}.",
+                actionPath: '/live-queue-status',
+            );
+        }
+    }
+
     protected function nextTicketNumber(Branch $branch): int
     {
         return (int) WalkInTicket::query()
@@ -634,5 +1137,12 @@ class OperationalWorkflowService
     protected function randomEmail(): string
     {
         return 'walkin-'.Str::lower(Str::random(8)).'@smartqdz.local';
+    }
+
+    protected function isSpecialNeedsAppointment(Appointment $appointment): bool
+    {
+        $appointment->loadMissing('customer.user');
+
+        return ($appointment->customer?->user?->user_type ?? null) === BookingCodeFormatter::SPECIAL_NEEDS_TYPE;
     }
 }
