@@ -51,16 +51,7 @@ class AuthController extends MobileApiController
             );
         }
 
-        $hasCustomerRole = $user->userRoles
-            ->pluck('role_name')
-            ->contains(fn ($role) => $role?->value === UserRoleName::Customer->value);
-
-        if (! $hasCustomerRole && ! $user->customer) {
-            return $this->respondValidationError(
-                'This account is not registered as a customer.',
-                ['identifier' => ['This account is not registered as a customer.']]
-            );
-        }
+        $this->ensureMobileCustomerContext($user);
 
         $issuedToken = $this->jwtTokenService->issueAccessToken(
             $user,
@@ -259,5 +250,135 @@ class AuthController extends MobileApiController
             'user_type' => $user->user_type ?? 'regular',
             'is_special_needs' => ($user->user_type ?? 'regular') === 'special_needs',
         ];
+    }
+
+    protected function ensureMobileCustomerContext(User $user): void
+    {
+        $hasCustomerRole = $user->userRoles
+            ->pluck('role_name')
+            ->contains(fn ($role) => $role?->value === UserRoleName::Customer->value);
+
+        if (! $hasCustomerRole) {
+            UserRole::query()->firstOrCreate([
+                'user_id' => $user->getKey(),
+                'role_name' => UserRoleName::Customer,
+            ]);
+        }
+
+        $customer = $user->customer;
+        $normalizedEmail = trim(mb_strtolower((string) ($user->email ?? '')));
+        $normalizedPhone = trim((string) ($user->phone_number ?? ''));
+
+        if (! $customer) {
+            $customer = Customer::withTrashed()
+                ->where('user_id', $user->getKey())
+                ->latest('created_at')
+                ->first();
+
+            // Backfill legacy accounts: attach an existing customer profile by
+            // phone/email before creating a new one.
+            if (! $customer && ($normalizedPhone !== '' || $normalizedEmail !== '')) {
+                $customer = Customer::withTrashed()
+                    ->where(function ($query) use ($normalizedPhone, $normalizedEmail) {
+                        if ($normalizedPhone !== '') {
+                            $query->orWhere('phone_number', $normalizedPhone);
+                        }
+
+                        if ($normalizedEmail !== '') {
+                            $query->orWhereRaw('LOWER(email_address) = ?', [$normalizedEmail]);
+                        }
+                    })
+                    ->orderByRaw("CASE WHEN user_id IS NULL THEN 0 ELSE 1 END")
+                    ->orderByDesc('updated_at')
+                    ->first();
+
+                if ($customer && ($customer->user_id === null || $customer->user_id === $user->getKey())) {
+                    $customer->user_id = $user->getKey();
+                }
+            }
+
+            if ($customer) {
+                if ($customer->trashed()) {
+                    $customer->restore();
+                }
+
+                $customer->update([
+                    'full_name' => $this->sanitizeCustomerName($customer->full_name, $user),
+                    'phone_number' => $customer->phone_number ?: ($user->phone_number ?? ''),
+                    'email_address' => $customer->email_address ?: $user->email,
+                ]);
+            } else {
+                $customer = Customer::query()->create([
+                    'user_id' => $user->getKey(),
+                    'full_name' => $this->sanitizeCustomerName(null, $user),
+                    'phone_number' => $user->phone_number ?? '',
+                    'email_address' => $user->email,
+                ]);
+            }
+        }
+
+        if ($customer) {
+            $customer->update([
+                'full_name' => $this->sanitizeCustomerName($customer->full_name, $user),
+                'phone_number' => $customer->phone_number ?: ($user->phone_number ?? ''),
+                'email_address' => $customer->email_address ?: $user->email,
+            ]);
+        }
+
+        $user->setRelation('customer', $customer);
+        if (! $hasCustomerRole) {
+            $user->loadMissing('userRoles');
+        }
+    }
+
+    protected function sanitizeCustomerName(?string $name, User $user): string
+    {
+        $rawName = trim((string) ($name ?? ''));
+        $emailLocal = trim((string) Str::before((string) ($user->email ?? ''), '@'));
+
+        if ($rawName === '') {
+            return $this->fallbackCustomerNameFromEmail($emailLocal);
+        }
+
+        if (str_contains($rawName, '@')) {
+            return $this->fallbackCustomerNameFromEmail($emailLocal);
+        }
+
+        $normalizedName = preg_replace('/[^a-z0-9]/', '', mb_strtolower($rawName)) ?? '';
+        $normalizedEmailLocal = preg_replace('/[^a-z0-9]/', '', mb_strtolower($emailLocal)) ?? '';
+
+        if (
+            $normalizedName !== ''
+            && $normalizedEmailLocal !== ''
+            && $normalizedName === $normalizedEmailLocal
+        ) {
+            return $this->fallbackCustomerNameFromEmail($emailLocal);
+        }
+
+        return $rawName;
+    }
+
+    protected function fallbackCustomerNameFromEmail(string $emailLocal): string
+    {
+        $local = trim($emailLocal);
+        if ($local === '') {
+            return 'SmartQ User';
+        }
+
+        if (preg_match('/[._-]/', $local) === 1) {
+            $parts = preg_split('/[._-]+/', $local) ?: [];
+            $parts = array_values(array_filter(array_map('trim', $parts)));
+            if ($parts !== []) {
+                return implode(' ', array_map(fn ($part) => Str::title($part), $parts));
+            }
+        }
+
+        // If the email local-part is username-like (often includes digits), avoid
+        // showing it as a person name in the greeting header.
+        if (preg_match('/\d/', $local) === 1) {
+            return 'SmartQ User';
+        }
+
+        return Str::title($local);
     }
 }

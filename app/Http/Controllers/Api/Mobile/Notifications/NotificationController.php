@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\Mobile\MobileApiController;
 use App\Models\Notification;
 use App\Models\User;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Validation\ValidationException;
 
 class NotificationController extends MobileApiController
@@ -15,24 +16,39 @@ class NotificationController extends MobileApiController
         /** @var User $user */
         $user = $request->user();
 
-        $items = Notification::query()
-            ->where('user_id', $user->getKey())
-            ->latest('occurred_at')
-            ->limit(50)
-            ->get()
-            ->map(function (Notification $notification) {
-                return [
-                    'id' => $notification->getKey(),
-                    'title' => $notification->title ?? 'Notification',
-                    'message' => $notification->description ?? '',
-                    'time' => optional($notification->occurred_at ?? $notification->created_at)
-                        ->diffForHumans(),
-                    'type' => $notification->notification_type ?? 'system',
-                    'unread' => $notification->read_at === null,
-                ];
-            })
-            ->values()
-            ->all();
+        $items = Cache::remember(
+            $this->notificationsCacheKey($user),
+            now()->addSeconds(8),
+            function () use ($user): array {
+                return Notification::query()
+                    ->where('user_id', $user->getKey())
+                    ->select([
+                        'id',
+                        'title',
+                        'description',
+                        'occurred_at',
+                        'created_at',
+                        'notification_type',
+                        'read_at',
+                    ])
+                    ->latest('occurred_at')
+                    ->limit(50)
+                    ->get()
+                    ->map(function (Notification $notification) {
+                        return [
+                            'id' => $notification->getKey(),
+                            'title' => $notification->title ?? 'Notification',
+                            'message' => $notification->description ?? '',
+                            'time' => optional($notification->occurred_at ?? $notification->created_at)
+                                ->diffForHumans(),
+                            'type' => $notification->notification_type ?? 'system',
+                            'unread' => $notification->read_at === null,
+                        ];
+                    })
+                    ->values()
+                    ->all();
+            }
+        );
 
         return $this->respond($items);
     }
@@ -46,6 +62,7 @@ class NotificationController extends MobileApiController
             ->where('user_id', $user->getKey())
             ->whereNull('read_at')
             ->update(['read_at' => now()]);
+        Cache::forget($this->notificationsCacheKey($user));
 
         return $this->respond(message: 'Notifications marked as read.');
     }
@@ -60,6 +77,7 @@ class NotificationController extends MobileApiController
         $notification->update([
             'read_at' => now(),
         ]);
+        Cache::forget($this->notificationsCacheKey($user));
 
         return $this->respond(message: 'Notification marked as read.');
     }
@@ -72,6 +90,7 @@ class NotificationController extends MobileApiController
         abort_unless($notification->user_id === $user->getKey(), 404);
 
         $notification->delete();
+        Cache::forget($this->notificationsCacheKey($user));
 
         return $this->respond(message: 'Notification deleted successfully.');
     }
@@ -102,7 +121,13 @@ class NotificationController extends MobileApiController
             ->where('user_id', $user->getKey())
             ->whereIn('id', $ids)
             ->delete();
+        Cache::forget($this->notificationsCacheKey($user));
 
         return $this->respond(message: 'Selected notifications deleted successfully.');
+    }
+
+    protected function notificationsCacheKey(User $user): string
+    {
+        return sprintf('mobile:notifications:%s', $user->getKey());
     }
 }

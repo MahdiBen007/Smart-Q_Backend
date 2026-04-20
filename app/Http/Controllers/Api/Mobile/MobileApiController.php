@@ -41,4 +41,17 @@ abstract class MobileApiController extends Controller
             'errors' => $errors,
         ], $status);
     }
+
+    protected function paginationMeta(int $page, int $perPage, int $total): array
+    {
+        $lastPage = max(1, (int) ceil($total / max($perPage, 1)));
+
+        return [
+            'page' => $page,
+            'per_page' => $perPage,
+            'total' => $total,
+            'last_page' => $lastPage,
+            'has_more' => $page < $lastPage,
+        ];
+    }
 }

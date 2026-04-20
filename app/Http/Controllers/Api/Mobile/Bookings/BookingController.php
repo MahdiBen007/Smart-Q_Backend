@@ -13,6 +13,7 @@ use App\Models\User;
 use App\Support\Dashboard\BookingCodeFormatter;
 use App\Support\Dashboard\OperationalWorkflowService;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Str;
 
 class BookingController extends MobileApiController
@@ -78,6 +79,7 @@ class BookingController extends MobileApiController
             'expiration_date_time' => $expiresAt,
             'token_status' => 'active',
         ]);
+        $this->flushMobileRealtimeCaches($user);
 
         return $this->respond([
             'appointment_id' => $appointment->getKey(),
@@ -112,7 +114,15 @@ class BookingController extends MobileApiController
             ->update([
                 'token_status' => TokenStatus::Expired,
             ]);
+        $this->flushMobileRealtimeCaches($user);
 
         return $this->respond(message: 'Booking cancelled successfully.');
+    }
+
+    protected function flushMobileRealtimeCaches(User $user): void
+    {
+        Cache::forget(sprintf('mobile:dashboard:%s', $user->getKey()));
+        Cache::forget(sprintf('mobile:tickets:%s', $user->getKey()));
+        Cache::forget(sprintf('mobile:notifications:%s', $user->getKey()));
     }
 }

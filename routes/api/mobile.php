@@ -14,7 +14,7 @@ use App\Http\Controllers\Api\Mobile\Tickets\TicketController;
 use App\Http\Controllers\Api\Mobile\TimeSlots\TimeSlotController;
 use Illuminate\Support\Facades\Route;
 
-Route::prefix('auth')->group(function () {
+Route::prefix('auth')->middleware('throttle:mobile-auth')->group(function () {
     Route::post('login', [AuthController::class, 'login']);
     Route::post('register', [AuthController::class, 'register']);
     Route::post('forgot-password', [AuthController::class, 'forgotPassword']);

@@ -9,6 +9,7 @@ use App\Models\QueueEntry;
 use App\Models\User;
 use App\Support\Dashboard\BookingCodeFormatter;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Http\Request;
 
 class TicketController extends MobileApiController
@@ -18,97 +19,145 @@ class TicketController extends MobileApiController
         /** @var User $user */
         $user = $request->user();
         $customer = $user->customer;
+        $page = max(1, (int) $request->integer('page', 1));
+        $perPage = (int) $request->integer('per_page', 20);
+        $perPage = max(1, min($perPage, 100));
 
         if (! $customer) {
-            return $this->respond([]);
+            return $this->respond([], meta: $this->paginationMeta($page, $perPage, 0));
         }
 
-        $appointments = Appointment::query()
-            ->with(['branch', 'service', 'customer.user', 'queueEntries'])
-            ->where('customer_id', $customer->getKey())
-            ->latest('appointment_date')
-            ->get();
+        $allTickets = Cache::remember(
+            sprintf('mobile:tickets:%s', $user->getKey()),
+            now()->addSeconds(8),
+            function () use ($customer): array {
+                $appointments = Appointment::query()
+                    ->with([
+                        'branch:id,branch_name',
+                        'service:id,service_name',
+                        'queueEntries:id,appointment_id,queue_status,updated_at',
+                    ])
+                    ->select([
+                        'id',
+                        'customer_id',
+                        'branch_id',
+                        'service_id',
+                        'appointment_date',
+                        'appointment_time',
+                        'appointment_status',
+                    ])
+                    ->where('customer_id', $customer->getKey())
+                    ->latest('appointment_date')
+                    ->get();
 
-        $appointmentTickets = $appointments->map(function (Appointment $appointment) {
-            $token = QrCodeToken::query()
-                ->where('appointment_id', $appointment->getKey())
-                ->latest()
-                ->first();
+                $appointmentIds = $appointments->pluck('id')->filter()->values()->all();
+                $appointmentTokens = $this->latestAppointmentTokens($appointmentIds);
 
-            $dateLine = $appointment->appointment_date
-                ? Carbon::parse($appointment->appointment_date)->format('M d, Y')
-                : '--';
-            $timeLine = $appointment->appointment_time
-                ? Carbon::parse($appointment->appointment_time)->format('g:i A')
-                : '--';
+                $appointmentTickets = $appointments->map(function (Appointment $appointment) use ($appointmentTokens) {
+                    $token = $appointmentTokens[$appointment->getKey()] ?? null;
 
-            $status = $this->ticketStatus($appointment);
+                    $dateLine = $appointment->appointment_date
+                        ? Carbon::parse($appointment->appointment_date)->format('M d, Y')
+                        : '--';
+                    $timeLine = $appointment->appointment_time
+                        ? Carbon::parse($appointment->appointment_time)->format('g:i A')
+                        : '--';
 
-            return [
-                'id' => $appointment->getKey(),
-                'kind' => 'appointment',
-                'booking_code' => BookingCodeFormatter::appointmentDisplayCode($appointment),
-                'title' => $appointment->service?->service_name ?? 'Service',
-                'subtitle' => $appointment->branch?->branch_name ?? 'Branch',
-                'date_line_1' => $dateLine,
-                'date_line_2' => $timeLine,
-                'status' => $status,
-                'status_pill' => ucfirst($status),
-                'access_key' => $token?->token_value ?? '',
-                'can_cancel' => $status === 'upcoming',
-            ];
-        });
+                    $status = $this->ticketStatus($appointment);
 
-        $queueEntries = QueueEntry::query()
-            ->with(['walkInTicket.branch', 'walkInTicket.service', 'walkInTicket.customer.user', 'queueSession', 'customer.user', 'appointment.customer.user'])
-            ->where('customer_id', $customer->getKey())
-            ->whereNotNull('ticket_id')
-            ->latest('updated_at')
-            ->get();
+                    return [
+                        'id' => $appointment->getKey(),
+                        'kind' => 'appointment',
+                        'booking_code' => BookingCodeFormatter::appointmentDisplayCode($appointment),
+                        'title' => $appointment->service?->service_name ?? 'Service',
+                        'subtitle' => $appointment->branch?->branch_name ?? 'Branch',
+                        'date_line_1' => $dateLine,
+                        'date_line_2' => $timeLine,
+                        'status' => $status,
+                        'status_pill' => ucfirst($status),
+                        'access_key' => $token?->token_value ?? '',
+                        'can_cancel' => $status === 'upcoming',
+                    ];
+                });
 
-        $walkInTickets = $queueEntries->map(function (QueueEntry $entry) {
-            $ticket = $entry->walkInTicket;
+                $queueEntries = QueueEntry::query()
+                    ->with([
+                        'walkInTicket.branch:id,branch_name',
+                        'walkInTicket.service:id,service_name',
+                        'queueSession:id,session_date',
+                    ])
+                    ->select([
+                        'id',
+                        'customer_id',
+                        'ticket_id',
+                        'queue_session_id',
+                        'queue_status',
+                        'checked_in_at',
+                        'created_at',
+                        'updated_at',
+                    ])
+                    ->where('customer_id', $customer->getKey())
+                    ->whereNotNull('ticket_id')
+                    ->latest('updated_at')
+                    ->get();
 
-            if (! $ticket) {
-                return null;
+                $walkInTicketIds = $queueEntries
+                    ->pluck('ticket_id')
+                    ->filter()
+                    ->unique()
+                    ->values()
+                    ->all();
+                $walkInTokens = $this->latestWalkInTokens($walkInTicketIds);
+
+                $walkInTickets = $queueEntries->map(function (QueueEntry $entry) use ($walkInTokens) {
+                    $ticket = $entry->walkInTicket;
+
+                    if (! $ticket) {
+                        return null;
+                    }
+
+                    $token = $walkInTokens[$ticket->getKey()] ?? null;
+
+                    $sessionDate = $entry->queueSession?->session_date
+                        ? Carbon::parse($entry->queueSession->session_date)->format('M d, Y')
+                        : Carbon::parse($entry->created_at)->format('M d, Y');
+                    $timeLine = $entry->checked_in_at
+                        ? Carbon::parse($entry->checked_in_at)->format('g:i A')
+                        : '--';
+
+                    $status = $this->queueTicketStatus($entry, $sessionDate);
+
+                    return [
+                        'id' => $ticket->getKey(),
+                        'kind' => 'walk_in',
+                        'booking_code' => BookingCodeFormatter::walkInDisplayCode($ticket),
+                        'title' => $ticket->service?->service_name ?? 'Walk-in Service',
+                        'subtitle' => $ticket->branch?->branch_name ?? 'Branch',
+                        'date_line_1' => $sessionDate,
+                        'date_line_2' => $timeLine,
+                        'status' => $status,
+                        'status_pill' => ucfirst($status),
+                        'access_key' => $token?->token_value ?? '',
+                        'can_cancel' => false,
+                    ];
+                })->filter()->values();
+
+                return $appointmentTickets
+                    ->concat($walkInTickets)
+                    ->sortByDesc('date_line_1')
+                    ->values()
+                    ->all();
             }
+        );
 
-            $token = QrCodeToken::query()
-                ->where('ticket_id', $ticket->getKey())
-                ->latest()
-                ->first();
+        $total = count($allTickets);
+        $offset = ($page - 1) * $perPage;
+        $tickets = array_slice($allTickets, $offset, $perPage);
 
-            $sessionDate = $entry->queueSession?->session_date
-                ? Carbon::parse($entry->queueSession->session_date)->format('M d, Y')
-                : Carbon::parse($entry->created_at)->format('M d, Y');
-            $timeLine = $entry->checked_in_at
-                ? Carbon::parse($entry->checked_in_at)->format('g:i A')
-                : '--';
-
-            $status = $this->queueTicketStatus($entry, $sessionDate);
-
-            return [
-                'id' => $ticket->getKey(),
-                'kind' => 'walk_in',
-                'booking_code' => BookingCodeFormatter::walkInDisplayCode($ticket),
-                'title' => $ticket->service?->service_name ?? 'Walk-in Service',
-                'subtitle' => $ticket->branch?->branch_name ?? 'Branch',
-                'date_line_1' => $sessionDate,
-                'date_line_2' => $timeLine,
-                'status' => $status,
-                'status_pill' => ucfirst($status),
-                'access_key' => $token?->token_value ?? '',
-                'can_cancel' => false,
-            ];
-        })->filter()->values();
-
-        $tickets = $appointmentTickets
-            ->concat($walkInTickets)
-            ->sortByDesc('date_line_1')
-            ->values()
-            ->all();
-
-        return $this->respond($tickets);
+        return $this->respond(
+            $tickets,
+            meta: $this->paginationMeta($page, $perPage, $total),
+        );
     }
 
     public function show(Request $request, Appointment $appointment)
@@ -213,5 +262,61 @@ class TicketController extends MobileApiController
         }
 
         return 'upcoming';
+    }
+
+    /**
+     * @param array<int, string> $appointmentIds
+     * @return array<string, QrCodeToken>
+     */
+    protected function latestAppointmentTokens(array $appointmentIds): array
+    {
+        if ($appointmentIds === []) {
+            return [];
+        }
+
+        /** @var \Illuminate\Support\Collection<int, QrCodeToken> $tokens */
+        $tokens = QrCodeToken::query()
+            ->whereIn('appointment_id', $appointmentIds)
+            ->orderByDesc('created_at')
+            ->get(['id', 'appointment_id', 'token_value', 'expiration_date_time']);
+
+        $resolved = [];
+        foreach ($tokens as $token) {
+            $appointmentId = (string) $token->appointment_id;
+            if ($appointmentId === '' || isset($resolved[$appointmentId])) {
+                continue;
+            }
+            $resolved[$appointmentId] = $token;
+        }
+
+        return $resolved;
+    }
+
+    /**
+     * @param array<int, string> $ticketIds
+     * @return array<string, QrCodeToken>
+     */
+    protected function latestWalkInTokens(array $ticketIds): array
+    {
+        if ($ticketIds === []) {
+            return [];
+        }
+
+        /** @var \Illuminate\Support\Collection<int, QrCodeToken> $tokens */
+        $tokens = QrCodeToken::query()
+            ->whereIn('ticket_id', $ticketIds)
+            ->orderByDesc('created_at')
+            ->get(['id', 'ticket_id', 'token_value', 'expiration_date_time']);
+
+        $resolved = [];
+        foreach ($tokens as $token) {
+            $ticketId = (string) $token->ticket_id;
+            if ($ticketId === '' || isset($resolved[$ticketId])) {
+                continue;
+            }
+            $resolved[$ticketId] = $token;
+        }
+
+        return $resolved;
     }
 }
