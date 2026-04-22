@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\Mobile\Dashboard;
 
 use App\Http\Controllers\Api\Mobile\MobileApiController;
 use App\Models\Appointment;
+use App\Models\Customer;
 use App\Models\QueueEntry;
 use App\Models\QrCodeToken;
 use App\Models\User;
@@ -26,29 +27,9 @@ class DashboardController extends MobileApiController
                 $activeBooking = null;
 
                 if ($customer) {
-                    $latestQueueEntry = QueueEntry::query()
-                        ->with(['appointment.branch.company', 'appointment.service', 'appointment.customer.user'])
-                        ->whereHas('appointment', function ($query) use ($customer) {
-                            $query
-                                ->where('customer_id', $customer->getKey())
-                                ->whereNotIn('appointment_status', ['cancelled', 'no_show']);
-                        })
-                        ->orderByDesc('updated_at')
-                        ->first();
-
-                    $appointment = $latestQueueEntry?->appointment;
-
-                    if (! $appointment) {
-                        $appointment = Appointment::query()
-                            ->with(['branch.company', 'service', 'customer.user'])
-                            ->where('customer_id', $customer->getKey())
-                            ->whereNotIn('appointment_status', ['cancelled', 'no_show'])
-                            ->orderByDesc('appointment_date')
-                            ->orderByDesc('updated_at')
-                            ->first();
-                    } else {
-                        $appointment->loadMissing(['branch.company', 'service', 'customer.user']);
-                    }
+                    $context = $this->resolveActiveAppointmentContext($customer);
+                    $appointment = $context['appointment'] ?? null;
+                    $entryForStatus = $context['queue_entry'] ?? null;
 
                     if ($appointment) {
                         $accessToken = QrCodeToken::query()
@@ -58,43 +39,7 @@ class DashboardController extends MobileApiController
 
                         $dateTime = $this->formatAppointmentDateTime($appointment);
 
-                        $status = is_object($appointment->appointment_status)
-                            ? (string) ($appointment->appointment_status->value ?? '')
-                            : (string) $appointment->appointment_status;
-
-                        $hasCompletedQueueEntry = QueueEntry::query()
-                            ->where('appointment_id', $appointment->getKey())
-                            ->where('queue_status', 'completed')
-                            ->exists();
-
-                        $entryForStatus = $latestQueueEntry;
-                        if (
-                            ! $entryForStatus
-                            || $entryForStatus->appointment_id !== $appointment->getKey()
-                        ) {
-                            $entryForStatus = QueueEntry::query()
-                                ->where('appointment_id', $appointment->getKey())
-                                ->orderByDesc('updated_at')
-                                ->first();
-                        }
-
-                        if ($entryForStatus) {
-                            $queueStatus = is_object($entryForStatus->queue_status)
-                                ? (string) ($entryForStatus->queue_status->value ?? '')
-                                : (string) $entryForStatus->queue_status;
-
-                            if ($queueStatus === 'completed') {
-                                $status = 'completed';
-                            } elseif (in_array($queueStatus, ['serving', 'next'], true)) {
-                                $status = 'serving';
-                            } elseif ($entryForStatus->checked_in_at !== null) {
-                                $status = 'confirmed';
-                            }
-                        }
-
-                        if ($hasCompletedQueueEntry) {
-                            $status = 'completed';
-                        }
+                        $status = $this->resolveDashboardStatus($appointment, $entryForStatus);
 
                         $activeBooking = [
                             'service' => $appointment->service?->service_name ?? '',
@@ -125,6 +70,117 @@ class DashboardController extends MobileApiController
         );
 
         return $this->respond($payload);
+    }
+
+    /**
+     * @return array{appointment: Appointment, queue_entry: QueueEntry|null}|null
+     */
+    protected function resolveActiveAppointmentContext(Customer $customer): ?array
+    {
+        $activeQueueEntry = QueueEntry::query()
+            ->with(['appointment.branch.company', 'appointment.service', 'appointment.customer.user'])
+            ->where('customer_id', $customer->getKey())
+            ->whereNotIn('queue_status', ['completed', 'cancelled'])
+            ->whereHas('appointment', function ($query) use ($customer) {
+                $query
+                    ->where('customer_id', $customer->getKey())
+                    ->whereNotIn('appointment_status', ['cancelled', 'no_show']);
+            })
+            ->orderByRaw(
+                "CASE queue_status
+                    WHEN 'serving' THEN 0
+                    WHEN 'next' THEN 1
+                    WHEN 'waiting' THEN 2
+                    ELSE 3
+                END"
+            )
+            ->orderByDesc('checked_in_at')
+            ->orderByDesc('updated_at')
+            ->first();
+
+        $activeAppointment = $activeQueueEntry?->appointment;
+        if ($activeAppointment) {
+            return [
+                'appointment' => $activeAppointment,
+                'queue_entry' => $activeQueueEntry,
+            ];
+        }
+
+        $upcomingAppointment = Appointment::query()
+            ->with([
+                'branch.company',
+                'service',
+                'customer.user',
+                'queueEntries:id,appointment_id,queue_status,checked_in_at,updated_at',
+            ])
+            ->where('customer_id', $customer->getKey())
+            ->whereNotIn('appointment_status', ['cancelled', 'no_show'])
+            ->whereDate('appointment_date', '>=', now()->toDateString())
+            ->orderBy('appointment_date')
+            ->orderBy('appointment_time')
+            ->orderByDesc('updated_at')
+            ->first();
+
+        if (! $upcomingAppointment) {
+            return null;
+        }
+
+        return [
+            'appointment' => $upcomingAppointment,
+            'queue_entry' => $this->latestRelevantQueueEntry($upcomingAppointment),
+        ];
+    }
+
+    protected function latestRelevantQueueEntry(Appointment $appointment): ?QueueEntry
+    {
+        if (! $appointment->relationLoaded('queueEntries')) {
+            $appointment->load([
+                'queueEntries:id,appointment_id,queue_status,checked_in_at,updated_at',
+            ]);
+        }
+
+        return $appointment->queueEntries
+            ->sortByDesc('updated_at')
+            ->first(function (QueueEntry $entry): bool {
+                return ! in_array($this->queueStatusValue($entry), ['completed', 'cancelled'], true);
+            });
+    }
+
+    protected function resolveDashboardStatus(Appointment $appointment, ?QueueEntry $queueEntry): string
+    {
+        $appointmentStatus = $this->appointmentStatusValue($appointment);
+        $queueStatus = $queueEntry ? $this->queueStatusValue($queueEntry) : '';
+
+        if (in_array($queueStatus, ['serving', 'next'], true) || $appointmentStatus === 'active') {
+            return 'serving';
+        }
+
+        if (
+            $queueStatus === 'waiting'
+            && $queueEntry?->checked_in_at !== null
+        ) {
+            return 'confirmed';
+        }
+
+        if (in_array($appointmentStatus, ['confirmed', 'pending'], true)) {
+            return $appointmentStatus;
+        }
+
+        return $appointmentStatus !== '' ? $appointmentStatus : 'pending';
+    }
+
+    protected function appointmentStatusValue(Appointment $appointment): string
+    {
+        return is_object($appointment->appointment_status)
+            ? (string) ($appointment->appointment_status->value ?? '')
+            : (string) $appointment->appointment_status;
+    }
+
+    protected function queueStatusValue(QueueEntry $entry): string
+    {
+        return is_object($entry->queue_status)
+            ? (string) ($entry->queue_status->value ?? '')
+            : (string) $entry->queue_status;
     }
 
     protected function formatAppointmentDateTime(Appointment $appointment): string
