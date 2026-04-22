@@ -56,15 +56,7 @@ class DashboardController extends MobileApiController
                             ->latest()
                             ->first();
 
-                        $dateTime = $appointment->appointment_date
-                            ? Carbon::parse($appointment->appointment_date)->toDateString()
-                            : null;
-
-                        if ($appointment->appointment_time) {
-                            $dateTime = Carbon::parse(
-                                $appointment->appointment_date.' '.$appointment->appointment_time
-                            )->toDateTimeString();
-                        }
+                        $dateTime = $this->formatAppointmentDateTime($appointment);
 
                         $status = is_object($appointment->appointment_status)
                             ? (string) ($appointment->appointment_status->value ?? '')
@@ -117,10 +109,7 @@ class DashboardController extends MobileApiController
                             'pass_id' => $appointment->getKey(),
                             'booking_code' => BookingCodeFormatter::appointmentDisplayCode($appointment),
                             'access_key' => $accessToken?->token_value ?? '',
-                            'arrival_window' => $appointment->appointment_time
-                                ? Carbon::parse($appointment->appointment_time)->format('g:i A').' - '
-                                    .Carbon::parse($appointment->appointment_time)->addMinutes(30)->format('g:i A')
-                                : '',
+                            'arrival_window' => $this->formatArrivalWindow($appointment),
                             'valid_until' => $accessToken?->expiration_date_time?->toDateTimeString() ?? '',
                         ];
                     }
@@ -136,5 +125,50 @@ class DashboardController extends MobileApiController
         );
 
         return $this->respond($payload);
+    }
+
+    protected function formatAppointmentDateTime(Appointment $appointment): string
+    {
+        $date = $appointment->appointment_date;
+        if (! $date) {
+            return '';
+        }
+
+        $resolvedDate = $date instanceof Carbon
+            ? $date->copy()
+            : Carbon::parse((string) $date);
+
+        $time = trim((string) $appointment->appointment_time);
+        if ($time === '') {
+            return $resolvedDate->format('M d, Y');
+        }
+
+        try {
+            return $resolvedDate
+                ->setTimeFromTimeString($time)
+                ->format('M d, Y g:i A');
+        } catch (\Throwable) {
+            return $resolvedDate->format('M d, Y');
+        }
+    }
+
+    protected function formatArrivalWindow(Appointment $appointment): string
+    {
+        $time = trim((string) $appointment->appointment_time);
+        if ($time === '') {
+            return '';
+        }
+
+        try {
+            $start = Carbon::createFromFormat('H:i:s', $time);
+        } catch (\Throwable) {
+            try {
+                $start = Carbon::createFromFormat('H:i', $time);
+            } catch (\Throwable) {
+                return '';
+            }
+        }
+
+        return $start->format('g:i A').' - '.$start->copy()->addMinutes(30)->format('g:i A');
     }
 }
