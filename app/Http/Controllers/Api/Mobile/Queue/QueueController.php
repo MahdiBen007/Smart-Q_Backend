@@ -9,6 +9,7 @@ use App\Models\User;
 use App\Support\Dashboard\BookingCodeFormatter;
 use App\Support\Dashboard\OperationalWorkflowService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 
 class QueueController extends MobileApiController
 {
@@ -67,24 +68,15 @@ class QueueController extends MobileApiController
         }
 
         $session = $entry->queueSession;
-        $currentlyServing = QueueEntry::query()
-            ->with($this->queueEntryRelations())
-            ->where('queue_session_id', $entry->queue_session_id)
-            ->where('queue_status', 'serving')
-            ->orderBy('queue_position')
-            ->orderBy('service_started_at')
-            ->first();
-
-        $entryStatus = is_object($entry->queue_status)
-            ? (string) ($entry->queue_status->value ?? '')
-            : (string) $entry->queue_status;
+        $activeDeskEntry = $this->resolveQueueMonitorActiveDeskEntry($entry);
+        $entryStatus = $this->queueStatusValue($entry);
         $queuePosition = $isSpecialNeeds ? 0 : max(0, (int) $entry->queue_position);
         $userTicketCode = $this->entryDisplayCode($entry);
-        $currentlyServingCode = $currentlyServing
-            ? $this->entryDisplayCode($currentlyServing)
+        $currentlyServingCode = $activeDeskEntry
+            ? $this->entryDisplayCode($activeDeskEntry)
             : (in_array($entryStatus, ['serving', 'next'], true) ? $userTicketCode : '--');
         $isAwaitingCheckIn = $entry->checked_in_at === null
-            && in_array($entry->queue_status->value, ['serving', 'next'], true);
+            && in_array($entryStatus, ['serving', 'next'], true);
         $graceRemainingSeconds = 0;
 
         if ($isAwaitingCheckIn) {
@@ -110,7 +102,7 @@ class QueueController extends MobileApiController
             'currently_serving' => $currentlyServingCode,
             'current_counter' => $session?->branch?->branch_name ?? 'Counter',
             'queue_position' => $queuePosition,
-            'estimated_wait_minutes' => $isSpecialNeeds ? 0 : ($queuePosition > 0 ? $queuePosition * 3 : 0),
+            'estimated_wait_minutes' => $this->estimatedWaitMinutes($entry),
             'awaiting_check_in' => $isAwaitingCheckIn,
             'check_in_grace_remaining_seconds' => $graceRemainingSeconds,
             'skipped_by_staff' => $skipNoticeId !== null,
@@ -199,6 +191,70 @@ class QueueController extends MobileApiController
     protected function entryDisplayCode(QueueEntry $entry): string
     {
         return BookingCodeFormatter::queueEntryDisplayCode($entry);
+    }
+
+    protected function queueStatusValue(QueueEntry $entry): string
+    {
+        return is_object($entry->queue_status)
+            ? (string) ($entry->queue_status->value ?? '')
+            : (string) $entry->queue_status;
+    }
+
+    protected function estimatedWaitMinutes(QueueEntry $entry): int
+    {
+        if (BookingCodeFormatter::isSpecialNeedsEntry($entry)) {
+            return 0;
+        }
+
+        $serviceDurationMinutes = max(
+            (int) ($entry->queueSession?->service?->average_service_duration_minutes ?? 10),
+            1
+        );
+
+        if ($this->queueStatusValue($entry) === 'serving') {
+            return 0;
+        }
+
+        return max((((int) $entry->queue_position) - 1) * $serviceDurationMinutes, 0);
+    }
+
+    protected function resolveQueueMonitorActiveDeskEntry(QueueEntry $entry): ?QueueEntry
+    {
+        if (! $entry->queue_session_id) {
+            return null;
+        }
+
+        return $this->queueMonitorSessionEntries($entry->queue_session_id)->first();
+    }
+
+    protected function queueMonitorSessionEntries(string $queueSessionId): Collection
+    {
+        return QueueEntry::query()
+            ->with($this->queueEntryRelations())
+            ->where('queue_session_id', $queueSessionId)
+            ->whereNotIn('queue_status', ['completed', 'cancelled'])
+            ->orderBy('queue_position')
+            ->get()
+            ->filter(fn (QueueEntry $entry): bool => $this->shouldExposeInQueueMonitor($entry))
+            ->sortBy(function (QueueEntry $entry): array {
+                $isCheckedInSpecialNeeds = BookingCodeFormatter::isSpecialNeedsEntry($entry)
+                    && $entry->checked_in_at !== null;
+
+                return [
+                    $isCheckedInSpecialNeeds ? 0 : 1,
+                    (int) $entry->queue_position,
+                ];
+            })
+            ->values();
+    }
+
+    protected function shouldExposeInQueueMonitor(QueueEntry $entry): bool
+    {
+        if (! BookingCodeFormatter::isSpecialNeedsEntry($entry)) {
+            return true;
+        }
+
+        return $entry->checked_in_at !== null;
     }
 
     protected function resolveActiveCustomerQueueEntry(string $customerId): ?QueueEntry

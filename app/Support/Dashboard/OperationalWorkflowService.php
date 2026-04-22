@@ -865,6 +865,11 @@ class OperationalWorkflowService
 
     protected function stageOrderedEntries(DailyQueueSession $session, array $orderedIds): Collection
     {
+        // Archived entries share the same unique queue_position namespace.
+        // Move only the conflicting archived positions out of the active range
+        // before reassigning active entries back to 1..N.
+        $this->shiftArchivedEntriesOutOfActiveRange($session, count($orderedIds));
+
         $entries = QueueEntry::query()
             ->lockForUpdate()
             ->where('queue_session_id', $session->getKey())
@@ -889,12 +894,20 @@ class OperationalWorkflowService
         return $entries;
     }
 
-    protected function shiftArchivedEntriesOutOfRange(DailyQueueSession $session): void
+    protected function shiftArchivedEntriesOutOfActiveRange(
+        DailyQueueSession $session,
+        int $activeRangeEnd,
+    ): void
     {
+        if ($activeRangeEnd < 1) {
+            return;
+        }
+
         $archivedEntries = QueueEntry::query()
             ->lockForUpdate()
             ->where('queue_session_id', $session->getKey())
             ->whereIn('queue_status', [QueueEntryStatus::Completed, QueueEntryStatus::Cancelled])
+            ->where('queue_position', '<=', $activeRangeEnd)
             ->orderBy('queue_position')
             ->get();
 

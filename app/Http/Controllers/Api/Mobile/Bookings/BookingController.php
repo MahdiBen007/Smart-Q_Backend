@@ -14,6 +14,7 @@ use App\Support\Dashboard\BookingCodeFormatter;
 use App\Support\Dashboard\OperationalWorkflowService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 class BookingController extends MobileApiController
@@ -42,6 +43,8 @@ class BookingController extends MobileApiController
             ->toDateString();
         $serviceId = $request->string('service_id')->value();
 
+        $this->purgeIncompleteAppointments($customer, $serviceId, $appointmentDate);
+
         $alreadyBookedToday = Appointment::query()
             ->where('customer_id', $customer->getKey())
             ->where('service_id', $serviceId)
@@ -60,25 +63,38 @@ class BookingController extends MobileApiController
             );
         }
 
-        $appointment = Appointment::query()->create([
-            'customer_id' => $customer->getKey(),
-            'branch_id' => $request->string('branch_id')->value(),
-            'service_id' => $serviceId,
-            'appointment_date' => $appointmentDate,
-            'appointment_time' => $request->input('appointment_time'),
-            'appointment_status' => 'pending',
-        ]);
+        ['appointment' => $appointment, 'qrToken' => $qrToken] = DB::transaction(function () use (
+            $appointmentDate,
+            $customer,
+            $request,
+            $serviceId,
+        ): array {
+            $appointment = Appointment::query()->create([
+                'customer_id' => $customer->getKey(),
+                'branch_id' => $request->string('branch_id')->value(),
+                'service_id' => $serviceId,
+                'appointment_date' => $appointmentDate,
+                'appointment_time' => $request->input('appointment_time'),
+                'appointment_status' => 'pending',
+            ]);
 
-        $tokenValue = strtoupper(Str::random(6)).'-'.strtoupper(Str::random(2));
-        // QR is valid only on the appointment day.
-        $expiresAt = Carbon::parse($appointment->appointment_date)->endOfDay();
+            $tokenValue = strtoupper(Str::random(6)).'-'.strtoupper(Str::random(2));
+            // QR is valid only on the appointment day.
+            $expiresAt = Carbon::parse($appointment->appointment_date)->endOfDay();
 
-        $qrToken = QrCodeToken::query()->create([
-            'appointment_id' => $appointment->getKey(),
-            'token_value' => $tokenValue,
-            'expiration_date_time' => $expiresAt,
-            'token_status' => 'active',
-        ]);
+            $qrToken = QrCodeToken::query()->create([
+                'appointment_id' => $appointment->getKey(),
+                'token_value' => $tokenValue,
+                'expiration_date_time' => $expiresAt,
+                'token_status' => 'active',
+            ]);
+
+            return [
+                'appointment' => $appointment,
+                'qrToken' => $qrToken,
+            ];
+        });
+
         $this->flushMobileRealtimeCaches($user);
 
         return $this->respond([
@@ -124,5 +140,20 @@ class BookingController extends MobileApiController
         Cache::forget(sprintf('mobile:dashboard:%s', $user->getKey()));
         Cache::forget(sprintf('mobile:tickets:%s', $user->getKey()));
         Cache::forget(sprintf('mobile:notifications:%s', $user->getKey()));
+    }
+
+    protected function purgeIncompleteAppointments(
+        Customer $customer,
+        string $serviceId,
+        string $appointmentDate,
+    ): void {
+        Appointment::query()
+            ->where('customer_id', $customer->getKey())
+            ->where('service_id', $serviceId)
+            ->whereDate('appointment_date', $appointmentDate)
+            ->where('appointment_status', '!=', 'cancelled')
+            ->whereDoesntHave('qrCodeTokens')
+            ->whereDoesntHave('queueEntries')
+            ->delete();
     }
 }

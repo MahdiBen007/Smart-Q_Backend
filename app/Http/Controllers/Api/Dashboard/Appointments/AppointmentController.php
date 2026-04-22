@@ -468,17 +468,8 @@ class AppointmentController extends DashboardApiController
         };
     }
 
-    protected function applyActiveQueueConstraint(Builder $query): void
-    {
-        $query->whereNotIn('queue_status', [
-            QueueEntryStatus::Completed->value,
-            QueueEntryStatus::Cancelled->value,
-        ]);
-    }
-
     protected function applyCheckedInQueueConstraint(Builder $query): void
     {
-        $this->applyActiveQueueConstraint($query);
         $query->whereNotNull('checked_in_at');
     }
 
@@ -551,15 +542,9 @@ class AppointmentController extends DashboardApiController
 
     protected function queueStateFor(Appointment $appointment): string
     {
-        $hasArrivedQueueState = $appointment->queueEntries->contains(function (QueueEntry $entry): bool {
-            $queueStatus = $entry->queue_status->value;
-
-            return $entry->checked_in_at !== null
-                || in_array($queueStatus, [
-                    QueueEntryStatus::Serving->value,
-                    QueueEntryStatus::Completed->value,
-                ], true);
-        });
+        $hasArrivedQueueState = $appointment->queueEntries->contains(
+            fn (QueueEntry $entry): bool => $entry->checked_in_at !== null
+        );
 
         return match (true) {
             $hasArrivedQueueState => 'Checked In',
