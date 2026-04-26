@@ -99,7 +99,7 @@ class AuthController extends MobileApiController
         $user = User::query()->create([
             'email' => $email !== '' ? $email : null,
             'phone_number' => $phone,
-            'password_hash' => $request->string('password')->value(),
+            'password_hash' => Hash::make($request->string('password')->value()),
             'user_type' => $userType,
             'is_active' => true,
         ]);
@@ -207,7 +207,7 @@ class AuthController extends MobileApiController
         }
 
         $user->update([
-            'password_hash' => $request->string('password')->value(),
+            'password_hash' => Hash::make($request->string('password')->value()),
         ]);
 
         $tokenRecord->update([

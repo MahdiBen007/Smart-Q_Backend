@@ -7,7 +7,9 @@ use App\Http\Controllers\Api\Dashboard\Branches\BranchController;
 use App\Http\Controllers\Api\Dashboard\Customers\CustomerController;
 use App\Http\Controllers\Api\Dashboard\Dashboard\DashboardController;
 use App\Http\Controllers\Api\Dashboard\Layout\LayoutController;
+use App\Http\Controllers\Api\Dashboard\Operations\OperationsScheduleController;
 use App\Http\Controllers\Api\Dashboard\QueueMonitor\QueueMonitorController;
+use App\Http\Controllers\Api\Dashboard\Counters\CounterController;
 use App\Http\Controllers\Api\Dashboard\Services\ServiceController;
 use App\Http\Controllers\Api\Dashboard\Settings\SettingsController;
 use App\Http\Controllers\Api\Dashboard\Staff\StaffController;
@@ -27,7 +29,7 @@ Route::middleware('jwt.auth')->group(function () {
         Route::patch('me', [AuthController::class, 'updateProfile']);
     });
 
-    Route::middleware('dashboard.role:admin,staff')->group(function () {
+    Route::middleware('dashboard.role:admin,manager,staff')->group(function () {
         Route::prefix('layout')->group(function () {
             Route::get('top-navbar', [LayoutController::class, 'topNavbar']);
         });
@@ -55,6 +57,12 @@ Route::middleware('jwt.auth')->group(function () {
                 Route::post('reset', [QueueMonitorController::class, 'reset']);
                 Route::post('clear-waiting', [QueueMonitorController::class, 'clearWaiting']);
             });
+        });
+
+        Route::prefix('operations-schedule')->group(function () {
+            Route::get('bootstrap', [OperationsScheduleController::class, 'bootstrap']);
+            Route::get('/', [OperationsScheduleController::class, 'show']);
+            Route::put('/', [OperationsScheduleController::class, 'upsert']);
         });
 
         Route::prefix('appointments')->group(function () {
@@ -91,7 +99,9 @@ Route::middleware('jwt.auth')->group(function () {
                 Route::delete('{branch}', [BranchController::class, 'destroy']);
                 Route::get('{branch}/services', [BranchController::class, 'services']);
             });
+        });
 
+        Route::middleware('dashboard.role:admin,manager')->group(function () {
             Route::prefix('services')->group(function () {
                 Route::get('bootstrap', [ServiceController::class, 'bootstrap']);
                 Route::get('/', [ServiceController::class, 'index']);
@@ -99,6 +109,15 @@ Route::middleware('jwt.auth')->group(function () {
                 Route::post('/', [ServiceController::class, 'store']);
                 Route::patch('{service}', [ServiceController::class, 'update']);
                 Route::patch('{service}/status', [ServiceController::class, 'updateStatus']);
+            });
+
+            Route::prefix('counters')->group(function () {
+                Route::get('bootstrap', [CounterController::class, 'bootstrap']);
+                Route::get('/', [CounterController::class, 'index']);
+                Route::get('{counter}', [CounterController::class, 'show']);
+                Route::post('/', [CounterController::class, 'store']);
+                Route::patch('{counter}', [CounterController::class, 'update']);
+                Route::patch('{counter}/status', [CounterController::class, 'updateStatus']);
             });
 
             Route::prefix('staff')->group(function () {

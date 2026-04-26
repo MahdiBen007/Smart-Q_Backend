@@ -10,7 +10,7 @@ final class DashboardCatalog
 
     public const SERVICE_STATUSES = ['Active', 'Inactive'];
 
-    public const STAFF_ROLES = ['Admin', 'Staff'];
+    public const STAFF_ROLES = ['Admin', 'Branch Admin', 'Staff'];
 
     public const STAFF_STATUSES = ['Active', 'Inactive', 'On Leave'];
 

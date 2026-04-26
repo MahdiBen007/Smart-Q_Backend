@@ -19,24 +19,34 @@ class LayoutController extends DashboardApiController
         $user = $request->user();
 
         $branchQuery = $this->scopeQueryByCompanyColumn(
-            Branch::query()->orderBy('branch_name'),
+            Branch::query()
+                ->select(['id', 'branch_name', 'logo_url'])
+                ->orderBy('branch_name'),
             $request
         );
         $branchQuery = $this->scopeQueryByAssignedBranchColumn($branchQuery, $request, 'id');
 
-        $branchNames = $branchQuery
-            ->pluck('branch_name')
-            ->values()
-            ->all();
+        $branches = $branchQuery
+            ->get()
+            ->map(fn (Branch $branch) => [
+                'id' => $branch->getKey(),
+                'name' => $branch->branch_name,
+                'logoUrl' => $branch->logo_url,
+            ])
+            ->values();
 
-        $branches = $this->shouldRestrictToAssignedBranch($request)
-            ? $branchNames
-            : collect($branchNames)->prepend('All Branches')->values()->all();
+        if (! $this->shouldRestrictToAssignedBranch($request)) {
+            $branches->prepend(['id' => null, 'name' => 'All Branches', 'logoUrl' => null]);
+        }
 
-        $defaultBranchName = $user->staffMember?->branch?->branch_name;
-        $defaultBranchIndex = $defaultBranchName !== null
-            ? max(array_search($defaultBranchName, $branches, true) ?: 0, 0)
-            : 0;
+        $defaultBranchId = $user->staffMember?->branch_id;
+        if (! is_string($defaultBranchId) || trim($defaultBranchId) === '') {
+            $defaultBranchId = null;
+        }
+
+        if ($defaultBranchId !== null && ! $branches->contains(fn (array $branch) => (string) ($branch['id'] ?? '') === $defaultBranchId)) {
+            $defaultBranchId = null;
+        }
 
         $alerts = $user->notifications()
             ->select([
@@ -83,10 +93,10 @@ class LayoutController extends DashboardApiController
             ->all();
 
         return $this->respond([
-            'branches' => $branches,
+            'branches' => $branches->values()->all(),
             'alerts' => $alerts,
             'bookings' => $bookings,
-            'defaultBranchIndex' => $defaultBranchIndex,
+            'defaultBranchId' => $defaultBranchId,
         ]);
     }
 

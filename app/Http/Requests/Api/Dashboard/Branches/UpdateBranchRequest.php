@@ -17,6 +17,7 @@ class UpdateBranchRequest extends BranchRequest
             'name' => ['sometimes', 'string', 'max:255'],
             'code' => ['sometimes', 'nullable', 'string', 'max:50', Rule::unique('branches', 'branch_code')->ignore($branch->getKey())],
             'address' => ['sometimes', 'string', 'max:255'],
+            'logo_url' => ['sometimes', 'nullable', 'url', 'max:2048'],
             'status' => ['sometimes', Rule::in(DashboardCatalog::BRANCH_STATUSES)],
             'latitude' => ['sometimes', 'nullable', 'numeric', 'between:-90,90'],
             'longitude' => ['sometimes', 'nullable', 'numeric', 'between:-180,180'],

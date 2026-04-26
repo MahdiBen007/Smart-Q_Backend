@@ -21,6 +21,7 @@ abstract class BranchRequest extends DashboardFormRequest
             'name' => 'branch name',
             'code' => 'branch code',
             'address' => 'branch address',
+            'logo_url' => 'branch logo',
             'status' => 'branch status',
             'latitude' => 'latitude',
             'longitude' => 'longitude',

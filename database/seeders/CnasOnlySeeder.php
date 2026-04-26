@@ -13,6 +13,7 @@ use App\Models\User;
 use App\Models\UserRole;
 use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Schema;
@@ -211,6 +212,11 @@ class CnasOnlySeeder extends Seeder
                 isOnline: true,
             );
 
+            $this->seedBranchAdmins(
+                companyId: $company->getKey(),
+                branches: $branches,
+            );
+
             $workers = [
                 [
                     'email' => 'worker1@cnas.dz',
@@ -261,6 +267,38 @@ class CnasOnlySeeder extends Seeder
                 );
             }
         });
+    }
+
+    protected function seedBranchAdmins(string $companyId, Collection $branches): void
+    {
+        $branchAdminPassword = '12345678';
+        $phoneNumberOffset = 200;
+
+        foreach ($branches->values() as $index => $branch) {
+            $branchCode = (string) $branch->branch_code;
+            $slug = strtolower((string) preg_replace('/[^a-z0-9]+/i', '-', $branchCode));
+            $slug = trim($slug, '-');
+
+            $email = "branchadmin.{$slug}@cnas.dz";
+            $phoneNumber = sprintf('+213550000%03d', $phoneNumberOffset + $index);
+
+            $shortBranchCode = str_starts_with($branchCode, 'CNAS-')
+                ? substr($branchCode, strlen('CNAS-'))
+                : $branchCode;
+
+            $this->seedDashboardUser(
+                email: $email,
+                phoneNumber: $phoneNumber,
+                password: $branchAdminPassword,
+                role: UserRoleName::Manager,
+                companyId: $companyId,
+                branchId: $branch->getKey(),
+                serviceId: null,
+                fullName: 'Branch Admin',
+                displayStaffCode: "CNAS-BADM-{$shortBranchCode}",
+                isOnline: false,
+            );
+        }
     }
 
     protected function seedDashboardUser(

@@ -14,12 +14,14 @@ class CustomerController extends DashboardApiController
 {
     public function bootstrap(ListCustomersRequest $request)
     {
-        $branches = $this->scopeQueryByCompanyColumn(
+        $branchesQuery = $this->scopeQueryByCompanyColumn(
             Branch::query()
                 ->select(['id', 'branch_name'])
                 ->orderBy('branch_name'),
             $request
-        )->get();
+        );
+        $branchesQuery = $this->scopeQueryByAssignedBranchColumn($branchesQuery, $request, 'id');
+        $branches = $branchesQuery->get();
 
         $baseQuery = $this->baseQuery($request);
 
@@ -82,17 +84,29 @@ class CustomerController extends DashboardApiController
             ->orderBy('full_name');
 
         $companyId = $this->currentCompanyId($request);
+        $branchId = $this->shouldRestrictToAssignedBranch($request) ? $this->currentBranchId($request) : null;
 
         if ($companyId === null) {
             return $query;
         }
 
-        return $query->where(function (Builder $companyQuery) use ($companyId): void {
+        $query = $query->where(function (Builder $companyQuery) use ($companyId): void {
             $companyQuery
                 ->whereHas('appointments.branch', fn (Builder $branchQuery) => $branchQuery->where('company_id', $companyId))
                 ->orWhereHas('walkInTickets.branch', fn (Builder $branchQuery) => $branchQuery->where('company_id', $companyId))
                 ->orWhereHas('queueEntries.queueSession.branch', fn (Builder $branchQuery) => $branchQuery->where('company_id', $companyId));
         });
+
+        if ($branchId !== null) {
+            $query->where(function (Builder $branchQuery) use ($branchId): void {
+                $branchQuery
+                    ->whereHas('appointments', fn (Builder $appointmentQuery) => $appointmentQuery->where('branch_id', $branchId))
+                    ->orWhereHas('walkInTickets', fn (Builder $ticketQuery) => $ticketQuery->where('branch_id', $branchId))
+                    ->orWhereHas('queueEntries.queueSession', fn (Builder $sessionQuery) => $sessionQuery->where('branch_id', $branchId));
+            });
+        }
+
+        return $query;
     }
 
     protected function applyFilters(Builder $query, ListCustomersRequest $request): Builder

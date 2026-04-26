@@ -28,7 +28,8 @@ class AnalyticsController extends DashboardApiController
         $serviceId = $this->shouldRestrictToAssignedService($request)
             ? $this->currentServiceId($request)
             : null;
-        $payload = $this->rememberScopedPayload($request, 'analytics:bootstrap', function () use ($request, $companyId, $branchId, $serviceId): array {
+        $cacheKey = sprintf('analytics:bootstrap:branch:%s:service:%s', $branchId ?: 'all', $serviceId ?: 'all');
+        $payload = $this->rememberScopedPayload($request, $cacheKey, function () use ($request, $companyId, $branchId, $serviceId): array {
             $branchesQuery = $this->scopeQueryByCompanyColumn(
                 Branch::query()
                     ->select(['id', 'branch_name'])

@@ -70,7 +70,11 @@ abstract class StaffRequest extends DashboardFormRequest
 
         $role = $staff->user?->userRoles()->value('role_name');
 
-        return $role === 'admin' ? 'Admin' : 'Staff';
+        return match ($role) {
+            'admin' => 'Admin',
+            'manager' => 'Branch Admin',
+            default => 'Staff',
+        };
     }
 
     protected function currentStaffBranchId(): ?string

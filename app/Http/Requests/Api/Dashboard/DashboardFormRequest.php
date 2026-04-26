@@ -67,13 +67,67 @@ abstract class DashboardFormRequest extends FormRequest
         return $this->user()?->staffMember?->company_id;
     }
 
+    protected function currentBranchId(): ?string
+    {
+        return $this->user()?->staffMember?->branch_id;
+    }
+
+    protected function currentServiceId(): ?string
+    {
+        return $this->user()?->staffMember?->service_id;
+    }
+
+    protected function currentRoleNames(): array
+    {
+        $user = $this->user();
+
+        if (! $user) {
+            return [];
+        }
+
+        $roles = $user->relationLoaded('userRoles')
+            ? $user->userRoles
+            : $user->userRoles()->get(['role_name']);
+
+        return $roles
+            ->map(fn ($userRole) => $userRole->role_name?->value ?? (string) $userRole->role_name)
+            ->filter()
+            ->values()
+            ->all();
+    }
+
+    protected function hasDashboardRole(string $role): bool
+    {
+        return in_array(strtolower($role), $this->currentRoleNames(), true);
+    }
+
+    protected function isDashboardAdmin(): bool
+    {
+        return $this->hasDashboardRole('admin');
+    }
+
+    protected function shouldRestrictToAssignedBranch(): bool
+    {
+        return ! $this->isDashboardAdmin() && $this->currentBranchId() !== null;
+    }
+
+    protected function shouldRestrictToAssignedService(): bool
+    {
+        return ! $this->isDashboardAdmin() && $this->currentServiceId() !== null;
+    }
+
     protected function branchExistsRule(): Exists
     {
         $rule = Rule::exists('branches', 'id');
         $companyId = $this->currentCompanyId();
+        $branchId = $this->currentBranchId();
 
         if ($companyId !== null) {
             $rule = $rule->where(fn ($query) => $query->where('company_id', $companyId));
+        }
+
+        if ($this->shouldRestrictToAssignedBranch() && $branchId !== null) {
+            $rule = $rule->where(fn ($query) => $query->where('id', $branchId));
         }
 
         return $rule;
@@ -83,12 +137,54 @@ abstract class DashboardFormRequest extends FormRequest
     {
         $rule = Rule::exists('services', 'id');
         $companyId = $this->currentCompanyId();
+        $branchId = $this->currentBranchId();
+
+        if ($companyId !== null) {
+            $companyBranchIds = DB::table('branches')->select('id')->where('company_id', $companyId);
+
+            $rule = $rule->where(function ($query) use ($companyBranchIds): void {
+                $query
+                    ->whereIn('branch_id', $companyBranchIds)
+                    ->orWhereIn('id', function ($pivotQuery) use ($companyBranchIds): void {
+                        $pivotQuery
+                            ->select('service_id')
+                            ->from('branch_service')
+                            ->whereIn('branch_id', $companyBranchIds);
+                    });
+            });
+        }
+
+        if ($this->shouldRestrictToAssignedBranch() && $branchId !== null) {
+            $rule = $rule->where(function ($query) use ($branchId): void {
+                $query
+                    ->where('branch_id', $branchId)
+                    ->orWhereIn('id', function ($pivotQuery) use ($branchId): void {
+                        $pivotQuery
+                            ->select('service_id')
+                            ->from('branch_service')
+                            ->where('branch_id', $branchId);
+                    });
+            });
+        }
+
+        return $rule;
+    }
+
+    protected function counterExistsRule(): Exists
+    {
+        $rule = Rule::exists('counters', 'id');
+        $companyId = $this->currentCompanyId();
+        $branchId = $this->currentBranchId();
 
         if ($companyId !== null) {
             $rule = $rule->where(fn ($query) => $query->whereIn(
                 'branch_id',
                 DB::table('branches')->select('id')->where('company_id', $companyId)
             ));
+        }
+
+        if ($this->shouldRestrictToAssignedBranch() && $branchId !== null) {
+            $rule = $rule->where(fn ($query) => $query->where('branch_id', $branchId));
         }
 
         return $rule;
@@ -98,9 +194,14 @@ abstract class DashboardFormRequest extends FormRequest
     {
         $rule = Rule::exists('staff_members', 'id');
         $companyId = $this->currentCompanyId();
+        $branchId = $this->currentBranchId();
 
         if ($companyId !== null) {
             $rule = $rule->where(fn ($query) => $query->where('company_id', $companyId));
+        }
+
+        if ($this->shouldRestrictToAssignedBranch() && $branchId !== null) {
+            $rule = $rule->where(fn ($query) => $query->where('branch_id', $branchId));
         }
 
         return $rule;
@@ -110,12 +211,17 @@ abstract class DashboardFormRequest extends FormRequest
     {
         $rule = Rule::exists('daily_queue_sessions', 'id');
         $companyId = $this->currentCompanyId();
+        $branchId = $this->currentBranchId();
 
         if ($companyId !== null) {
             $rule = $rule->where(fn ($query) => $query->whereIn(
                 'branch_id',
                 DB::table('branches')->select('id')->where('company_id', $companyId)
             ));
+        }
+
+        if ($this->shouldRestrictToAssignedBranch() && $branchId !== null) {
+            $rule = $rule->where(fn ($query) => $query->where('branch_id', $branchId));
         }
 
         return $rule;
@@ -125,12 +231,17 @@ abstract class DashboardFormRequest extends FormRequest
     {
         $rule = Rule::exists('kiosk_devices', 'id');
         $companyId = $this->currentCompanyId();
+        $branchId = $this->currentBranchId();
 
         if ($companyId !== null) {
             $rule = $rule->where(fn ($query) => $query->whereIn(
                 'branch_id',
                 DB::table('branches')->select('id')->where('company_id', $companyId)
             ));
+        }
+
+        if ($this->shouldRestrictToAssignedBranch() && $branchId !== null) {
+            $rule = $rule->where(fn ($query) => $query->where('branch_id', $branchId));
         }
 
         return $rule;

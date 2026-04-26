@@ -11,6 +11,7 @@ abstract class ServiceRequest extends DashboardFormRequest
         return array_merge(parent::messages(), [
             'branch_ids.min' => 'At least one branch must be assigned to the service.',
             'branch_ids.*.exists' => 'One of the selected service branches is invalid.',
+            'counter_ids.*.exists' => 'One of the selected counters is invalid.',
         ]);
     }
 
@@ -26,6 +27,8 @@ abstract class ServiceRequest extends DashboardFormRequest
             'status' => 'service status',
             'branch_ids' => 'service branches',
             'branch_ids.*' => 'service branch',
+            'counter_ids' => 'service counters',
+            'counter_ids.*' => 'service counter',
         ];
     }
 }

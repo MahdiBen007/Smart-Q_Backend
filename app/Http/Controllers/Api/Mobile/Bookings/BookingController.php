@@ -12,15 +12,18 @@ use App\Models\QrCodeToken;
 use App\Models\User;
 use App\Support\Dashboard\BookingCodeFormatter;
 use App\Support\Dashboard\OperationalWorkflowService;
+use App\Support\Operations\OperationsScheduleTimeSlotService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 
 class BookingController extends MobileApiController
 {
     public function __construct(
         protected OperationalWorkflowService $workflow,
+        protected OperationsScheduleTimeSlotService $timeSlots,
     ) {}
 
     public function confirm(ConfirmBookingRequest $request)
@@ -63,37 +66,69 @@ class BookingController extends MobileApiController
             );
         }
 
-        ['appointment' => $appointment, 'qrToken' => $qrToken] = DB::transaction(function () use (
-            $appointmentDate,
-            $customer,
-            $request,
-            $serviceId,
-        ): array {
-            $appointment = Appointment::query()->create([
-                'customer_id' => $customer->getKey(),
-                'branch_id' => $request->string('branch_id')->value(),
-                'service_id' => $serviceId,
-                'appointment_date' => $appointmentDate,
-                'appointment_time' => $request->input('appointment_time'),
-                'appointment_status' => 'pending',
-            ]);
+        $branchId = $request->string('branch_id')->value();
+        $appointmentTime = (string) $request->input('appointment_time');
 
-            $tokenValue = strtoupper(Str::random(6)).'-'.strtoupper(Str::random(2));
-            // QR is valid only on the appointment day.
-            $expiresAt = Carbon::parse($appointment->appointment_date)->endOfDay();
+        try {
+            ['appointment' => $appointment, 'qrToken' => $qrToken] = DB::transaction(function () use (
+                $appointmentDate,
+                $appointmentTime,
+                $branchId,
+                $customer,
+                $serviceId,
+            ): array {
+                DB::table('branches')
+                    ->where('id', $branchId)
+                    ->lockForUpdate()
+                    ->first();
 
-            $qrToken = QrCodeToken::query()->create([
-                'appointment_id' => $appointment->getKey(),
-                'token_value' => $tokenValue,
-                'expiration_date_time' => $expiresAt,
-                'token_status' => 'active',
-            ]);
+                $this->timeSlots->ensureSlotIsBookable(
+                    branchId: $branchId,
+                    serviceId: $serviceId,
+                    date: Carbon::parse($appointmentDate),
+                    time: $appointmentTime,
+                );
 
-            return [
-                'appointment' => $appointment,
-                'qrToken' => $qrToken,
-            ];
-        });
+                $appointment = Appointment::query()->create([
+                    'customer_id' => $customer->getKey(),
+                    'branch_id' => $branchId,
+                    'service_id' => $serviceId,
+                    'appointment_date' => $appointmentDate,
+                    'appointment_time' => $appointmentTime,
+                    'appointment_status' => 'pending',
+                ]);
+
+                $tokenValue = strtoupper(Str::random(6)).'-'.strtoupper(Str::random(2));
+                // QR is valid only on the appointment day.
+                $expiresAt = Carbon::parse($appointment->appointment_date)->endOfDay();
+
+                $qrToken = QrCodeToken::query()->create([
+                    'appointment_id' => $appointment->getKey(),
+                    'token_value' => $tokenValue,
+                    'expiration_date_time' => $expiresAt,
+                    'token_status' => 'active',
+                ]);
+
+                return [
+                    'appointment' => $appointment,
+                    'qrToken' => $qrToken,
+                ];
+            });
+        } catch (ValidationException $exception) {
+            $errors = $exception->errors();
+            $firstError = null;
+            foreach ($errors as $messages) {
+                if (is_array($messages) && $messages !== []) {
+                    $firstError = (string) ($messages[0] ?? null);
+                    break;
+                }
+            }
+
+            return $this->respondValidationError(
+                $firstError ?: 'Selected appointment slot is not available.',
+                $errors,
+            );
+        }
 
         $this->flushMobileRealtimeCaches($user);
 

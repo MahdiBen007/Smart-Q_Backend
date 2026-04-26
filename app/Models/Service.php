@@ -44,6 +44,20 @@ class Service extends Model
     public function branches(): BelongsToMany
     {
         return $this->belongsToMany(Branch::class)
+            ->withPivot([
+                'service_name_override',
+                'service_subtitle_override',
+                'service_description_override',
+                'service_icon_override',
+                'average_service_duration_minutes_override',
+                'is_active_override',
+            ])
+            ->withTimestamps();
+    }
+
+    public function counters(): BelongsToMany
+    {
+        return $this->belongsToMany(Counter::class)
             ->withTimestamps();
     }
 

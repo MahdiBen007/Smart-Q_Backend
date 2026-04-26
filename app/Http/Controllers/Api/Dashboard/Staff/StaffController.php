@@ -18,6 +18,7 @@ use App\Models\User;
 use App\Models\UserRole;
 use App\Support\Dashboard\DashboardFormatting;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -26,21 +27,37 @@ class StaffController extends DashboardApiController
 {
     public function bootstrap(ListStaffRequest $request)
     {
-        $branches = $this->scopeQueryByCompanyColumn(
+        $branchesQuery = $this->scopeQueryByCompanyColumn(
             Branch::query()
             ->select(['id', 'branch_name'])
             ->orderBy('branch_name'),
             $request
-        )->get();
+        );
+        $branchesQuery = $this->scopeQueryByAssignedBranchColumn($branchesQuery, $request, 'id');
+        $branches = $branchesQuery->get();
 
-        $services = $this->scopeQueryByCompanyRelation(
+        $servicesQuery = $this->scopeQueryByCompanyRelation(
             Service::query()
                 ->select(['id', 'service_name', 'branch_id'])
                 ->with(['branches:id'])
                 ->orderBy('service_name'),
             $request,
             'branch'
-        )->get();
+        );
+
+        if ($this->shouldRestrictToAssignedBranch($request)) {
+            $branchId = $this->currentBranchId($request);
+
+            if ($branchId !== null) {
+                $servicesQuery->where(function (Builder $query) use ($branchId): void {
+                    $query
+                        ->where('branch_id', $branchId)
+                        ->orWhereHas('branches', fn (Builder $branchQuery) => $branchQuery->whereKey($branchId));
+                });
+            }
+        }
+
+        $services = $servicesQuery->get();
 
         return $this->respond([
             'staffMembers' => $this->applyFilters($this->baseQuery($request), $request)
@@ -83,6 +100,7 @@ class StaffController extends DashboardApiController
     public function show(ListStaffRequest $request, StaffMember $staff)
     {
         $this->ensureCompanyAccess($request, $staff);
+        $this->ensureCanManageStaffMember($request, $staff);
         $staff->loadMissing($this->staffRelations());
 
         return $this->respond($this->transformStaff($staff));
@@ -91,6 +109,10 @@ class StaffController extends DashboardApiController
     public function store(StoreStaffRequest $request)
     {
         $validated = $request->validated();
+
+        if (! $this->isDashboardAdmin($request) && ($validated['role'] ?? null) === 'Admin') {
+            abort(403, 'Only dashboard admins can assign the Admin role.');
+        }
 
         $staff = DB::transaction(function () use ($validated) {
             $branch = Branch::query()->findOrFail($validated['branch_id']);
@@ -134,7 +156,12 @@ class StaffController extends DashboardApiController
     public function update(UpdateStaffRequest $request, StaffMember $staff)
     {
         $this->ensureCompanyAccess($request, $staff);
+        $this->ensureCanManageStaffMember($request, $staff);
         $validated = $request->validated();
+
+        if (! $this->isDashboardAdmin($request) && ($validated['role'] ?? null) === 'Admin') {
+            abort(403, 'Only dashboard admins can assign the Admin role.');
+        }
 
         DB::transaction(function () use ($validated, $staff) {
             $targetRole = $validated['role'] ?? DashboardFormatting::titleCase(
@@ -189,6 +216,7 @@ class StaffController extends DashboardApiController
     public function updateBranch(UpdateStaffBranchRequest $request, StaffMember $staff)
     {
         $this->ensureCompanyAccess($request, $staff);
+        $this->ensureCanManageStaffMember($request, $staff);
         $branch = Branch::query()->findOrFail($request->validated('branch_id'));
 
         $staff->update([
@@ -217,6 +245,7 @@ class StaffController extends DashboardApiController
     public function updateStatus(UpdateStaffStatusRequest $request, StaffMember $staff)
     {
         $this->ensureCompanyAccess($request, $staff);
+        $this->ensureCanManageStaffMember($request, $staff);
         $statusLabel = $request->validated('status');
         $status = $this->mapStatusLabelToEnum($statusLabel);
 
@@ -241,6 +270,7 @@ class StaffController extends DashboardApiController
     public function uploadAvatar(UploadStaffAvatarRequest $request, StaffMember $staff)
     {
         $this->ensureCompanyAccess($request, $staff);
+        $this->ensureCanManageStaffMember($request, $staff);
         $validated = $request->validated();
 
         $avatarUrl = $validated['avatar_url'] ?? $staff->avatar_url;
@@ -265,12 +295,37 @@ class StaffController extends DashboardApiController
 
     protected function baseQuery(ListStaffRequest $request): Builder
     {
-        return $this->scopeQueryByCompanyColumn(
+        $query = $this->scopeQueryByCompanyColumn(
             StaffMember::query()
             ->with($this->staffRelations())
             ->orderBy('full_name'),
             $request
         );
+
+        $query = $this->scopeQueryByAssignedBranchColumn($query, $request);
+
+        if (! $this->isDashboardAdmin($request)) {
+            $query->whereDoesntHave(
+                'user.userRoles',
+                fn (Builder $roleQuery) => $roleQuery->where('role_name', UserRoleName::Admin->value)
+            );
+        }
+
+        return $query;
+    }
+
+    protected function ensureCanManageStaffMember(Request $request, StaffMember $staff): void
+    {
+        if ($this->isDashboardAdmin($request)) {
+            return;
+        }
+
+        $staff->loadMissing(['user.userRoles']);
+        $isAdmin = $staff->user?->userRoles?->contains(
+            fn (UserRole $role) => ($role->role_name?->value ?? (string) $role->role_name) === UserRoleName::Admin->value
+        );
+
+        abort_if($isAdmin, 403, 'Only dashboard admins can manage admin accounts.');
     }
 
     protected function staffRelations(): array
@@ -323,6 +378,11 @@ class StaffController extends DashboardApiController
     protected function transformStaff(StaffMember $staff): array
     {
         $role = $staff->user?->userRoles->first()?->role_name?->value ?? 'staff';
+        $roleLabel = match ($role) {
+            'admin' => 'Admin',
+            'manager' => 'Branch Admin',
+            default => 'Staff',
+        };
         $servedToday = $staff->servedQueueEntries
             ->filter(fn ($entry) => $entry->updated_at?->isToday() && $entry->queue_status->value === 'completed')
             ->count();
@@ -344,7 +404,7 @@ class StaffController extends DashboardApiController
             'branch' => $staff->branch?->branch_name ?? 'Unassigned Branch',
             'serviceId' => $staff->service?->getKey(),
             'serviceName' => $staff->service?->service_name,
-            'role' => DashboardFormatting::titleCase($role),
+            'role' => $roleLabel,
             'status' => DashboardFormatting::employmentStatusLabel($staff->employment_status->value),
             'performance' => $performance,
             'servedToday' => $servedToday,
@@ -363,7 +423,8 @@ class StaffController extends DashboardApiController
     protected function roleAccessLevel(string $role): string
     {
         return match ($role) {
-            'admin' => 'Branch Administrator',
+            'admin' => 'Company Administrator',
+            'manager' => 'Branch Administrator',
             default => 'Assigned Service Operator',
         };
     }
@@ -384,6 +445,7 @@ class StaffController extends DashboardApiController
     {
         return match ($role) {
             'Admin' => UserRoleName::Admin,
+            'Branch Admin' => UserRoleName::Manager,
             default => UserRoleName::Staff,
         };
     }

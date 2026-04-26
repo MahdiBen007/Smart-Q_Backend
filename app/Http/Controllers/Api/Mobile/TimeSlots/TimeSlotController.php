@@ -3,26 +3,39 @@
 namespace App\Http\Controllers\Api\Mobile\TimeSlots;
 
 use App\Http\Controllers\Api\Mobile\MobileApiController;
+use App\Support\Operations\OperationsScheduleTimeSlotService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 
 class TimeSlotController extends MobileApiController
 {
+    public function __construct(
+        protected OperationsScheduleTimeSlotService $timeSlots,
+    ) {}
+
     public function index(Request $request)
     {
+        $branchId = trim($request->string('branch_id')->value());
+        $serviceId = trim($request->string('service_id')->value());
         $date = $request->string('date')->value();
-        $baseDate = $date !== '' ? Carbon::parse($date) : Carbon::now();
 
-        $slots = [];
-
-        for ($hour = 9; $hour <= 16; $hour++) {
-            $time = $baseDate->copy()->setTime($hour, 0);
-            $slots[] = [
-                'time' => $time->format('H:i'),
-                'label' => $time->format('g:i A'),
-                'available' => true,
-            ];
+        if ($branchId === '' || $serviceId === '') {
+            return $this->respondValidationError(
+                'Branch and service are required to fetch time slots.',
+                [
+                    'branch_id' => ['Select a branch first.'],
+                    'service_id' => ['Select a service first.'],
+                ],
+            );
         }
+
+        try {
+            $baseDate = $date !== '' ? Carbon::parse($date) : Carbon::now();
+        } catch (\Throwable) {
+            $baseDate = Carbon::now();
+        }
+
+        $slots = $this->timeSlots->listSlots($branchId, $serviceId, $baseDate);
 
         return $this->respond($slots);
     }

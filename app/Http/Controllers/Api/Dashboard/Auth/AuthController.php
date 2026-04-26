@@ -215,6 +215,7 @@ class AuthController extends DashboardApiController
                     'id' => $staffMember->branch->getKey(),
                     'name' => $staffMember->branch->branch_name,
                     'code' => $staffMember->branch->branch_code,
+                    'logo_url' => $staffMember->branch->logo_url,
                 ] : null,
                 'company' => $staffMember->company ? [
                     'id' => $staffMember->company->getKey(),

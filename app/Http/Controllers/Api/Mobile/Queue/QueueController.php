@@ -100,7 +100,7 @@ class QueueController extends MobileApiController
         return $this->respond([
             'user_ticket' => $userTicketCode,
             'currently_serving' => $currentlyServingCode,
-            'current_counter' => $session?->branch?->branch_name ?? 'Counter',
+            'current_counter' => $session?->branch?->branch_name ?? 'Guichet',
             'queue_position' => $queuePosition,
             'estimated_wait_minutes' => $this->estimatedWaitMinutes($entry),
             'awaiting_check_in' => $isAwaitingCheckIn,

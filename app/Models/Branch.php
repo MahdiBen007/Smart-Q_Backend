@@ -21,6 +21,7 @@ class Branch extends Model
         'company_id',
         'branch_name',
         'branch_address',
+        'logo_url',
         'latitude',
         'longitude',
         'branch_code',
@@ -47,6 +48,14 @@ class Branch extends Model
     public function services(): BelongsToMany
     {
         return $this->belongsToMany(Service::class)
+            ->withPivot([
+                'service_name_override',
+                'service_subtitle_override',
+                'service_description_override',
+                'service_icon_override',
+                'average_service_duration_minutes_override',
+                'is_active_override',
+            ])
             ->withTimestamps();
     }
 

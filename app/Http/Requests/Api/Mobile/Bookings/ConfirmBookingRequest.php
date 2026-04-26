@@ -12,7 +12,7 @@ class ConfirmBookingRequest extends MobileFormRequest
             'branch_id' => ['required', 'uuid', 'exists:branches,id'],
             'service_id' => ['required', 'uuid', 'exists:services,id'],
             'appointment_date' => ['required', 'date'],
-            'appointment_time' => ['nullable', 'date_format:H:i'],
+            'appointment_time' => ['required', 'date_format:H:i'],
             'full_name' => ['nullable', 'string', 'min:2', 'max:120'],
         ];
     }

@@ -18,6 +18,7 @@ class StoreBranchRequest extends BranchRequest
             'name' => ['required', 'string', 'max:255'],
             'code' => ['nullable', 'string', 'max:50', 'unique:branches,branch_code'],
             'address' => ['required', 'string', 'max:255'],
+            'logo_url' => ['nullable', 'url', 'max:2048'],
             'status' => ['required', Rule::in(DashboardCatalog::BRANCH_STATUSES)],
             'latitude' => ['nullable', 'numeric', 'between:-90,90'],
             'longitude' => ['nullable', 'numeric', 'between:-180,180'],

@@ -21,8 +21,11 @@ class UpdateServiceRequest extends ServiceRequest
             'icon' => ['sometimes', 'nullable', 'string', Rule::in(DashboardCatalog::SERVICE_ICONS)],
             'average_service_duration_minutes' => ['sometimes', 'integer', 'min:1', 'max:180'],
             'status' => ['sometimes', Rule::in(DashboardCatalog::SERVICE_STATUSES)],
+            'branch_id' => ['sometimes', 'nullable', $this->branchExistsRule()],
             'branch_ids' => ['sometimes', 'array', 'min:1'],
             'branch_ids.*' => ['required_with:branch_ids', $this->branchExistsRule()],
+            'counter_ids' => ['sometimes', 'array'],
+            'counter_ids.*' => ['required_with:counter_ids', $this->counterExistsRule()],
         ];
     }
 }

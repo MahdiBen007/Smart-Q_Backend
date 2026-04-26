@@ -131,7 +131,7 @@ class DashboardFormatting
 
     public static function serviceCounterLabel(int $position): string
     {
-        return $position > 0 ? 'Counter '.(($position % 4) + 1) : 'Pending';
+        return $position > 0 ? 'Guichet '.(($position % 4) + 1) : 'Pending';
     }
 
     public static function displayTicketCode(string $prefix, int $number): string
