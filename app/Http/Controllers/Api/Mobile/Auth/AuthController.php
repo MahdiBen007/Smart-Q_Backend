@@ -264,6 +264,18 @@ class AuthController extends MobileApiController
         return $this->respond($this->transformUser($user->loadMissing(['customer'])));
     }
 
+    public function session(Request $request)
+    {
+        /** @var User $user */
+        $user = $request->user()->loadMissing(['customer', 'userRoles']);
+        $this->ensureMobileCustomerContext($user);
+
+        return $this->respond(
+            $this->issueMobileSession($user->fresh(['customer']), $request),
+            'Session upgraded successfully.'
+        );
+    }
+
     public function logout(Request $request)
     {
         $payload = $request->attributes->get('jwt_payload', []);

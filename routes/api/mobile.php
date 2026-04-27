@@ -26,6 +26,7 @@ Route::middleware('jwt.auth')->group(function () {
     Route::prefix('auth')->group(function () {
         Route::post('logout', [AuthController::class, 'logout']);
         Route::get('me', [AuthController::class, 'me']);
+        Route::post('session', [AuthController::class, 'session']);
     });
 
     Route::get('dashboard', [DashboardController::class, 'show']);
