@@ -24,6 +24,7 @@ class OperationsSchedule extends Model
         'status',
         'published_at',
         'schedule',
+        'published_schedule',
         'created_by',
         'updated_by',
     ];
@@ -32,6 +33,7 @@ class OperationsSchedule extends Model
     {
         return [
             'schedule' => 'array',
+            'published_schedule' => 'array',
             'published_at' => 'datetime',
         ];
     }

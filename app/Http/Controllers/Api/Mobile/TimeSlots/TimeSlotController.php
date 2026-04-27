@@ -18,6 +18,7 @@ class TimeSlotController extends MobileApiController
         $branchId = trim($request->string('branch_id')->value());
         $serviceId = trim($request->string('service_id')->value());
         $date = $request->string('date')->value();
+        $bookingChannel = $request->string('booking_channel', 'in_person')->value();
 
         if ($branchId === '' || $serviceId === '') {
             return $this->respondValidationError(
@@ -35,7 +36,7 @@ class TimeSlotController extends MobileApiController
             $baseDate = Carbon::now();
         }
 
-        $slots = $this->timeSlots->listSlots($branchId, $serviceId, $baseDate);
+        $slots = $this->timeSlots->listSlots($branchId, $serviceId, $baseDate, $bookingChannel);
 
         return $this->respond($slots);
     }

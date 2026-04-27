@@ -195,8 +195,13 @@ class DashboardController extends MobileApiController
             : Carbon::parse((string) $date);
 
         $time = trim((string) $appointment->appointment_time);
+        $timeLabel = trim((string) $appointment->appointment_time_label);
         if ($time === '') {
             return $resolvedDate->format('M d, Y');
+        }
+
+        if ($timeLabel !== '') {
+            return $resolvedDate->format('M d, Y').' '.$timeLabel;
         }
 
         try {
@@ -210,6 +215,11 @@ class DashboardController extends MobileApiController
 
     protected function formatArrivalWindow(Appointment $appointment): string
     {
+        $timeLabel = trim((string) $appointment->appointment_time_label);
+        if ($timeLabel !== '') {
+            return $timeLabel;
+        }
+
         $time = trim((string) $appointment->appointment_time);
         if ($time === '') {
             return '';

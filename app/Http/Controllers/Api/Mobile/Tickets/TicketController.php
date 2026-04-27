@@ -44,6 +44,9 @@ class TicketController extends MobileApiController
                         'service_id',
                         'appointment_date',
                         'appointment_time',
+                        'appointment_end_time',
+                        'appointment_time_label',
+                        'appointment_session_id',
                         'appointment_status',
                     ])
                     ->where('customer_id', $customer->getKey())
@@ -59,9 +62,12 @@ class TicketController extends MobileApiController
                     $dateLine = $appointment->appointment_date
                         ? Carbon::parse($appointment->appointment_date)->format('M d, Y')
                         : '--';
-                    $timeLine = $appointment->appointment_time
-                        ? Carbon::parse($appointment->appointment_time)->format('g:i A')
-                        : '--';
+                    $timeLine = trim((string) $appointment->appointment_time_label);
+                    if ($timeLine === '') {
+                        $timeLine = $appointment->appointment_time
+                            ? Carbon::parse($appointment->appointment_time)->format('g:i A')
+                            : '--';
+                    }
 
                     $status = $this->ticketStatus($appointment);
 
@@ -183,6 +189,9 @@ class TicketController extends MobileApiController
             'branch_address' => $appointment->branch?->branch_address ?? '',
             'appointment_date' => $appointment->appointment_date,
             'appointment_time' => $appointment->appointment_time,
+            'appointment_end_time' => $appointment->appointment_end_time,
+            'appointment_time_label' => $appointment->appointment_time_label,
+            'appointment_session_id' => $appointment->appointment_session_id,
             'status' => $this->ticketStatus($appointment),
             'access_key' => $token?->token_value ?? '',
         ]);

@@ -68,6 +68,7 @@ class BookingController extends MobileApiController
 
         $branchId = $request->string('branch_id')->value();
         $appointmentTime = (string) $request->input('appointment_time');
+        $bookingChannel = $request->string('booking_channel', 'in_person')->value();
 
         try {
             ['appointment' => $appointment, 'qrToken' => $qrToken] = DB::transaction(function () use (
@@ -76,17 +77,19 @@ class BookingController extends MobileApiController
                 $branchId,
                 $customer,
                 $serviceId,
+                $bookingChannel,
             ): array {
                 DB::table('branches')
                     ->where('id', $branchId)
                     ->lockForUpdate()
                     ->first();
 
-                $this->timeSlots->ensureSlotIsBookable(
+                $bookableSlot = $this->timeSlots->ensureSlotIsBookable(
                     branchId: $branchId,
                     serviceId: $serviceId,
                     date: Carbon::parse($appointmentDate),
                     time: $appointmentTime,
+                    bookingChannel: $bookingChannel,
                 );
 
                 $appointment = Appointment::query()->create([
@@ -94,7 +97,11 @@ class BookingController extends MobileApiController
                     'branch_id' => $branchId,
                     'service_id' => $serviceId,
                     'appointment_date' => $appointmentDate,
-                    'appointment_time' => $appointmentTime,
+                    'appointment_time' => $bookableSlot['time'] ?? $appointmentTime,
+                    'appointment_end_time' => $bookableSlot['end_time'] ?? null,
+                    'appointment_time_label' => $bookableSlot['label'] ?? null,
+                    'appointment_session_id' => $bookableSlot['session_id'] ?? null,
+                    'appointment_channel' => $bookableSlot['booking_channel'] ?? $bookingChannel,
                     'appointment_status' => 'pending',
                 ]);
 

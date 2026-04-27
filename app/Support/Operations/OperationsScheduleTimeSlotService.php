@@ -14,8 +14,16 @@ use Illuminate\Validation\ValidationException;
 
 class OperationsScheduleTimeSlotService
 {
-    public function listSlots(string $branchId, string $serviceId, CarbonInterface $date): array
+    protected const MINIMUM_LEAD_MINUTES = 15;
+
+    public function listSlots(
+        string $branchId,
+        string $serviceId,
+        CarbonInterface $date,
+        string $bookingChannel = 'in_person',
+    ): array
     {
+        $bookingChannel = $this->normalizeBookingChannel($bookingChannel);
         $context = $this->resolveBookingContext($branchId, $serviceId);
         $schedule = $this->resolveSchedulePayload(
             companyId: $context['company_id'],
@@ -23,8 +31,8 @@ class OperationsScheduleTimeSlotService
             serviceId: $serviceId,
         ) ?? $this->defaultSchedulePayload();
 
-        $dateOnly = Carbon::parse($date->toDateString());
-        if ($dateOnly->isPast() && ! $dateOnly->isToday()) {
+        $dateOnly = Carbon::parse($date->toDateString(), $this->bookingTimezone())->startOfDay();
+        if ($dateOnly->lt(Carbon::today($this->bookingTimezone()))) {
             return [];
         }
 
@@ -51,11 +59,12 @@ class OperationsScheduleTimeSlotService
             branchId: $branchId,
             serviceId: $serviceId,
             appointmentDate: $dateOnly->toDateString(),
+            bookingChannel: $bookingChannel,
         );
 
         $nowMinutes = null;
         if ($dateOnly->isToday()) {
-            $now = Carbon::now();
+            $now = Carbon::now($this->bookingTimezone())->addMinutes(self::MINIMUM_LEAD_MINUTES);
             $nowMinutes = ((int) $now->format('H')) * 60 + ((int) $now->format('i'));
         }
 
@@ -64,7 +73,7 @@ class OperationsScheduleTimeSlotService
         foreach ($slots as $slot) {
             $startMinutes = $slot['start_minutes'];
             $endMinutes = $slot['end_minutes'] ?? null;
-            $capacity = $slot['capacity'];
+            $capacity = $this->capacityForBookingChannel($slot, $bookingChannel);
             if ($capacity <= 0) {
                 continue;
             }
@@ -88,6 +97,13 @@ class OperationsScheduleTimeSlotService
                 'time' => $timeKey,
                 'end_time' => $endTimeKey,
                 'label' => $timeKey.' - '.$endTimeKey,
+                'session_id' => $slot['session_id'] ?? null,
+                'session_title' => $slot['session_title'] ?? null,
+                'period' => $slot['period'] ?? $this->periodForStartMinutes((int) $startMinutes),
+                'capacity' => $capacity,
+                'remote_capacity' => $slot['remote_capacity'] ?? 0,
+                'in_person_capacity' => $slot['in_person_capacity'] ?? 0,
+                'booking_channel' => $bookingChannel,
                 'available' => $remaining > 0,
                 'remaining' => $remaining,
             ];
@@ -101,8 +117,9 @@ class OperationsScheduleTimeSlotService
         string $serviceId,
         CarbonInterface $date,
         string $time,
-    ): void {
-        $slots = $this->listSlots($branchId, $serviceId, $date);
+        string $bookingChannel = 'in_person',
+    ): array {
+        $slots = $this->listSlots($branchId, $serviceId, $date, $bookingChannel);
         $normalizedTime = $this->normalizeTime($time);
         if ($normalizedTime === null) {
             throw ValidationException::withMessages([
@@ -129,6 +146,8 @@ class OperationsScheduleTimeSlotService
                 'appointment_time' => ['Selected time slot is fully booked.'],
             ]);
         }
+
+        return $match;
     }
 
     protected function resolveBookingContext(string $branchId, string $serviceId): array
@@ -173,15 +192,22 @@ class OperationsScheduleTimeSlotService
 
         $schedules = OperationsSchedule::query()
             ->where('company_id', $companyId)
-            ->whereIn('status', ['draft', 'published'])
             ->whereIn('target_key', $targetKeys)
             ->get()
             ->keyBy('target_key');
 
         foreach ($targetKeys as $key) {
             $schedule = $schedules->get($key);
-            if ($schedule) {
-                return is_array($schedule->schedule) ? $schedule->schedule : null;
+            if (! $schedule) {
+                continue;
+            }
+
+            if (is_array($schedule->published_schedule)) {
+                return $schedule->published_schedule;
+            }
+
+            if ($schedule->status === 'published' && is_array($schedule->schedule)) {
+                return $schedule->schedule;
             }
         }
 
@@ -268,8 +294,8 @@ class OperationsScheduleTimeSlotService
             return false;
         }
 
-        $today = Carbon::today();
-        $dateOnly = Carbon::parse($date->toDateString());
+        $today = Carbon::today($this->bookingTimezone());
+        $dateOnly = Carbon::parse($date->toDateString(), $this->bookingTimezone())->startOfDay();
 
         if ($dateOnly->lt($today)) {
             return false;
@@ -354,6 +380,11 @@ class OperationsScheduleTimeSlotService
 
             $startTime = is_string($session['startTime'] ?? null) ? (string) $session['startTime'] : '08:00';
             $endTime = is_string($session['endTime'] ?? null) ? (string) $session['endTime'] : '12:00';
+            $sessionId = is_string($session['id'] ?? null) && trim((string) $session['id']) !== ''
+                ? trim((string) $session['id'])
+                : $this->periodForStartMinutes($this->toMinutes($startTime));
+            $sessionTitle = is_string($session['title'] ?? null) ? trim((string) $session['title']) : '';
+            $sessionPeriod = $this->normalizePeriod($sessionId) ?? $this->periodForStartMinutes($this->toMinutes($startTime));
 
             $sessionSlots = [];
             if (is_array($session['slots'] ?? null) && $session['slots'] !== []) {
@@ -379,6 +410,11 @@ class OperationsScheduleTimeSlotService
                         'start_minutes' => max(0, min(24 * 60, $startMinutes)),
                         'end_minutes' => max(0, min(24 * 60, $endMinutes)),
                         'capacity' => $capacity,
+                        'remote_capacity' => max(0, $remote),
+                        'in_person_capacity' => max(0, $inPerson),
+                        'session_id' => $sessionId,
+                        'session_title' => $sessionTitle,
+                        'period' => $sessionPeriod,
                     ];
                 }
             } else {
@@ -388,6 +424,11 @@ class OperationsScheduleTimeSlotService
                         'start_minutes' => $slot['startMinutes'],
                         'end_minutes' => $slot['endMinutes'],
                         'capacity' => max(0, (int) ($slot['remote'] ?? 0) + (int) ($slot['inPerson'] ?? 0)),
+                        'remote_capacity' => max(0, (int) ($slot['remote'] ?? 0)),
+                        'in_person_capacity' => max(0, (int) ($slot['inPerson'] ?? 0)),
+                        'session_id' => $sessionId,
+                        'session_title' => $sessionTitle,
+                        'period' => $sessionPeriod,
                     ];
                 }
             }
@@ -413,13 +454,25 @@ class OperationsScheduleTimeSlotService
         return $unique;
     }
 
-    protected function bookedCountsByTime(string $branchId, string $serviceId, string $appointmentDate): array
+    protected function bookedCountsByTime(
+        string $branchId,
+        string $serviceId,
+        string $appointmentDate,
+        string $bookingChannel,
+    ): array
     {
         $appointments = Appointment::query()
             ->where('branch_id', $branchId)
             ->where('service_id', $serviceId)
             ->whereDate('appointment_date', $appointmentDate)
             ->whereIn('appointment_status', ['pending', 'confirmed', 'active'])
+            ->where(function ($query) use ($bookingChannel): void {
+                $query
+                    ->where('appointment_channel', $bookingChannel)
+                    ->when($bookingChannel === 'in_person', function ($query): void {
+                        $query->orWhereNull('appointment_channel');
+                    });
+            })
             ->whereNotNull('appointment_time')
             ->get(['appointment_time']);
 
@@ -470,6 +523,46 @@ class OperationsScheduleTimeSlotService
             'sun' => 'Sun',
             default => null,
         };
+    }
+
+    protected function normalizePeriod(string $value): ?string
+    {
+        $candidate = strtolower(trim($value));
+
+        return match (true) {
+            str_contains($candidate, 'morning'), str_contains($candidate, 'am') => 'morning',
+            str_contains($candidate, 'evening'), str_contains($candidate, 'pm'), str_contains($candidate, 'afternoon') => 'evening',
+            default => null,
+        };
+    }
+
+    protected function normalizeBookingChannel(string $value): string
+    {
+        $candidate = strtolower(trim($value));
+
+        return match ($candidate) {
+            'remote', 'online' => 'remote',
+            default => 'in_person',
+        };
+    }
+
+    protected function capacityForBookingChannel(array $slot, string $bookingChannel): int
+    {
+        if ($bookingChannel === 'remote') {
+            return max(0, (int) ($slot['remote_capacity'] ?? 0));
+        }
+
+        return max(0, (int) ($slot['in_person_capacity'] ?? $slot['capacity'] ?? 0));
+    }
+
+    protected function periodForStartMinutes(int $startMinutes): string
+    {
+        return $startMinutes < 12 * 60 ? 'morning' : 'evening';
+    }
+
+    protected function bookingTimezone(): string
+    {
+        return (string) config('app.timezone', 'UTC');
     }
 
     protected function timeLabel(string $time): string

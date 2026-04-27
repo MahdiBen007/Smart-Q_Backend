@@ -25,6 +25,10 @@ class Appointment extends Model
         'staff_id',
         'appointment_date',
         'appointment_time',
+        'appointment_end_time',
+        'appointment_time_label',
+        'appointment_session_id',
+        'appointment_channel',
         'appointment_status',
     ];
 

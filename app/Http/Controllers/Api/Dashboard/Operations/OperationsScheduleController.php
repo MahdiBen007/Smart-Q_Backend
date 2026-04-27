@@ -285,22 +285,30 @@ class OperationsScheduleController extends DashboardApiController
 
         $schedulePayload = $request->input('schedule', []);
 
-        $schedule = OperationsSchedule::query()->updateOrCreate(
-            [
-                'company_id' => $companyId,
-                'target_key' => $this->buildTargetKey($scope, $branchId, $serviceId),
-            ],
-            [
-                'scope' => $scope,
-                'branch_id' => $branchId,
-                'service_id' => $serviceId,
-                'status' => $status,
-                'published_at' => $status === 'published' ? now() : null,
-                'schedule' => $schedulePayload,
-                'updated_by' => $user->getKey(),
-                'created_by' => $user->getKey(),
-            ]
-        );
+        $schedule = OperationsSchedule::query()->firstOrNew([
+            'company_id' => $companyId,
+            'target_key' => $this->buildTargetKey($scope, $branchId, $serviceId),
+        ]);
+
+        if (! $schedule->exists) {
+            $schedule->created_by = $user->getKey();
+        }
+
+        $schedule->fill([
+            'scope' => $scope,
+            'branch_id' => $branchId,
+            'service_id' => $serviceId,
+            'status' => $status,
+            'schedule' => $schedulePayload,
+            'updated_by' => $user->getKey(),
+        ]);
+
+        if ($status === 'published') {
+            $schedule->published_at = now();
+            $schedule->published_schedule = $schedulePayload;
+        }
+
+        $schedule->save();
 
         $this->invalidateDashboardCache($request);
 

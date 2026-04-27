@@ -578,17 +578,29 @@ class AppointmentController extends DashboardApiController
             ->first();
         $queueState = $this->queueStateFor($appointment);
         $serviceDurationMinutes = max((int) ($appointment->service?->average_service_duration_minutes ?? 30), 1);
-        $timeSlot = $appointment->appointment_time
-            ? sprintf(
-                '%s - %s',
-                DashboardFormatting::shortTime($appointment->appointment_time),
-                DashboardFormatting::shortTime(
-                    $appointment->appointment_date
-                        ? $appointment->appointment_date->copy()->setTimeFromTimeString((string) $appointment->appointment_time)->addMinutes($serviceDurationMinutes)
-                        : now()->addMinutes($serviceDurationMinutes)
-                )
-            )
-            : '--';
+        $timeSlot = trim((string) $appointment->appointment_time_label);
+        if ($timeSlot === '') {
+            if ($appointment->appointment_time) {
+                $slotEnd = $appointment->appointment_end_time
+                    ? (string) $appointment->appointment_end_time
+                    : (
+                        $appointment->appointment_date
+                            ? $appointment->appointment_date
+                                ->copy()
+                                ->setTimeFromTimeString((string) $appointment->appointment_time)
+                                ->addMinutes($serviceDurationMinutes)
+                            : now()->addMinutes($serviceDurationMinutes)
+                    );
+
+                $timeSlot = sprintf(
+                    '%s - %s',
+                    DashboardFormatting::shortTime($appointment->appointment_time),
+                    DashboardFormatting::shortTime($slotEnd)
+                );
+            } else {
+                $timeSlot = '--';
+            }
+        }
         $visits = (int) ($appointment->customer?->appointments_count ?? 0);
         $noShows = (int) ($appointment->customer?->no_show_appointments_count ?? 0);
         $activeQueuePosition = $activeQueueEntry
