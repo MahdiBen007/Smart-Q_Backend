@@ -6,6 +6,7 @@ use App\Models\Appointment;
 use App\Models\Branch;
 use App\Models\OperationsSchedule;
 use App\Models\Service;
+use App\Models\WalkInTicket;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
@@ -61,6 +62,18 @@ class OperationsScheduleTimeSlotService
             appointmentDate: $dateOnly->toDateString(),
             bookingChannel: $bookingChannel,
         );
+        if ($bookingChannel === 'in_person') {
+            $walkInCounts = $this->walkInCountsBySlotTime(
+                branchId: $branchId,
+                serviceId: $serviceId,
+                ticketDate: $dateOnly->toDateString(),
+                slots: $slots,
+            );
+
+            foreach ($walkInCounts as $time => $count) {
+                $bookedCounts[$time] = ($bookedCounts[$time] ?? 0) + $count;
+            }
+        }
 
         $nowMinutes = null;
         if ($dateOnly->isToday()) {
@@ -148,6 +161,43 @@ class OperationsScheduleTimeSlotService
         }
 
         return $match;
+    }
+
+    public function ensureCurrentWalkInSlotIsBookable(
+        string $branchId,
+        string $serviceId,
+    ): array {
+        $now = Carbon::now($this->bookingTimezone());
+        $slots = $this->listSlots($branchId, $serviceId, $now, 'in_person');
+        $nowMinutes = ((int) $now->format('H')) * 60 + ((int) $now->format('i'));
+
+        $currentSlot = null;
+        foreach ($slots as $slot) {
+            $startMinutes = $this->toMinutes((string) ($slot['time'] ?? ''));
+            $endMinutes = $this->toMinutes((string) ($slot['end_time'] ?? ''));
+            if ($endMinutes <= $startMinutes) {
+                continue;
+            }
+
+            if ($nowMinutes >= $startMinutes && $nowMinutes < $endMinutes) {
+                $currentSlot = $slot;
+                break;
+            }
+        }
+
+        if ($currentSlot === null) {
+            throw ValidationException::withMessages([
+                'service_id' => ['Walk-ins are not available for this service at the current time.'],
+            ]);
+        }
+
+        if (! ($currentSlot['available'] ?? false)) {
+            throw ValidationException::withMessages([
+                'service_id' => ['The walk-in capacity for the current time window is full.'],
+            ]);
+        }
+
+        return $currentSlot;
     }
 
     protected function resolveBookingContext(string $branchId, string $serviceId): array
@@ -487,6 +537,55 @@ class OperationsScheduleTimeSlotService
         }
 
         return $counts;
+    }
+
+    protected function walkInCountsBySlotTime(
+        string $branchId,
+        string $serviceId,
+        string $ticketDate,
+        array $slots,
+    ): array {
+        $tickets = WalkInTicket::query()
+            ->where('branch_id', $branchId)
+            ->where('service_id', $serviceId)
+            ->whereDate('created_at', $ticketDate)
+            ->get(['slot_start_time', 'created_at']);
+
+        $counts = [];
+
+        foreach ($tickets as $ticket) {
+            $slotStart = $this->normalizeTime((string) $ticket->slot_start_time);
+            if ($slotStart === null && $ticket->created_at) {
+                $createdAt = $ticket->created_at->copy()->timezone($this->bookingTimezone());
+                $ticketMinutes = ((int) $createdAt->format('H')) * 60 + ((int) $createdAt->format('i'));
+                $slotStart = $this->slotStartForMinutes($slots, $ticketMinutes);
+            }
+
+            if ($slotStart === null) {
+                continue;
+            }
+
+            $counts[$slotStart] = ($counts[$slotStart] ?? 0) + 1;
+        }
+
+        return $counts;
+    }
+
+    protected function slotStartForMinutes(array $slots, int $minutes): ?string
+    {
+        foreach ($slots as $slot) {
+            $startMinutes = (int) ($slot['start_minutes'] ?? 0);
+            $endMinutes = (int) ($slot['end_minutes'] ?? 0);
+            if ($endMinutes <= $startMinutes) {
+                continue;
+            }
+
+            if ($minutes >= $startMinutes && $minutes < $endMinutes) {
+                return $this->minutesToTime($startMinutes);
+            }
+        }
+
+        return null;
     }
 
     protected function normalizeTime(string $time): ?string

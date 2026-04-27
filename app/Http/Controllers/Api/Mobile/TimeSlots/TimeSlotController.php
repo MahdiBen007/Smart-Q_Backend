@@ -18,7 +18,7 @@ class TimeSlotController extends MobileApiController
         $branchId = trim($request->string('branch_id')->value());
         $serviceId = trim($request->string('service_id')->value());
         $date = $request->string('date')->value();
-        $bookingChannel = $request->string('booking_channel', 'in_person')->value();
+        $bookingChannel = $request->string('booking_channel', 'remote')->value();
 
         if ($branchId === '' || $serviceId === '') {
             return $this->respondValidationError(

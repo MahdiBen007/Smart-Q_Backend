@@ -68,7 +68,7 @@ class BookingController extends MobileApiController
 
         $branchId = $request->string('branch_id')->value();
         $appointmentTime = (string) $request->input('appointment_time');
-        $bookingChannel = $request->string('booking_channel', 'in_person')->value();
+        $bookingChannel = $request->string('booking_channel', 'remote')->value();
 
         try {
             ['appointment' => $appointment, 'qrToken' => $qrToken] = DB::transaction(function () use (

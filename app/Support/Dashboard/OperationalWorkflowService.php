@@ -21,6 +21,7 @@ use App\Models\QrCodeToken;
 use App\Models\QueueEntry;
 use App\Models\Service;
 use App\Models\WalkInTicket;
+use App\Support\Operations\OperationsScheduleTimeSlotService;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
@@ -32,6 +33,10 @@ use Throwable;
 class OperationalWorkflowService
 {
     public const ABSENT_CHECK_IN_GRACE_SECONDS = 30;
+
+    public function __construct(
+        protected OperationsScheduleTimeSlotService $timeSlots,
+    ) {}
 
     public function enqueueTodayAppointment(Appointment $appointment): ?QueueEntry
     {
@@ -367,6 +372,14 @@ class OperationalWorkflowService
         return DB::transaction(function () use ($payload) {
             $branch = Branch::query()->findOrFail($payload['branch_id']);
             $service = Service::query()->findOrFail($payload['service_id']);
+            Branch::query()
+                ->whereKey($branch->getKey())
+                ->lockForUpdate()
+                ->first();
+            $walkInSlot = $this->timeSlots->ensureCurrentWalkInSlotIsBookable(
+                branchId: $branch->getKey(),
+                serviceId: $service->getKey(),
+            );
             $session = $this->ensureSession($branch, $service);
 
             $customer = isset($payload['customer_id'])
@@ -384,6 +397,10 @@ class OperationalWorkflowService
                 'service_id' => $service->getKey(),
                 'queue_session_id' => $session->getKey(),
                 'appointment_id' => $payload['appointment_id'] ?? null,
+                'slot_start_time' => $walkInSlot['time'] ?? null,
+                'slot_end_time' => $walkInSlot['end_time'] ?? null,
+                'slot_time_label' => $walkInSlot['label'] ?? null,
+                'slot_session_id' => $walkInSlot['session_id'] ?? null,
                 'ticket_number' => $this->nextTicketNumber($branch),
                 'ticket_source' => $payload['ticket_source'] ?? TicketSource::StaffAssisted,
                 'ticket_status' => TicketStatus::Queued,
