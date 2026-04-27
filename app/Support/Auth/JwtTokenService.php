@@ -18,6 +18,39 @@ class JwtTokenService
         ?int $ttlMinutes = null,
     ): array
     {
+        return $this->issueToken(
+            $user,
+            'access',
+            $ipAddress,
+            $userAgent,
+            $ttlMinutes ?? (int) Config::get('jwt.ttl_minutes', 120),
+        );
+    }
+
+    public function issueRefreshToken(
+        User $user,
+        ?string $ipAddress = null,
+        ?string $userAgent = null,
+        ?int $ttlMinutes = null,
+    ): array
+    {
+        return $this->issueToken(
+            $user,
+            'refresh',
+            $ipAddress,
+            $userAgent,
+            $ttlMinutes ?? (int) Config::get('jwt.mobile_refresh_ttl_minutes', 525600),
+        );
+    }
+
+    protected function issueToken(
+        User $user,
+        string $type,
+        ?string $ipAddress = null,
+        ?string $userAgent = null,
+        ?int $ttlMinutes = null,
+    ): array
+    {
         $issuedAt = CarbonImmutable::now();
         $resolvedTtl = max(1, $ttlMinutes ?? (int) Config::get('jwt.ttl_minutes', 120));
         $expiresAt = $issuedAt->addMinutes($resolvedTtl);
@@ -30,7 +63,7 @@ class JwtTokenService
             'exp' => $expiresAt->timestamp,
             'sub' => $user->getKey(),
             'jti' => $jti,
-            'typ' => 'access',
+            'typ' => $type,
         ];
 
         $token = $this->encode($payload);
@@ -38,7 +71,7 @@ class JwtTokenService
         JwtToken::create([
             'user_id' => $user->getKey(),
             'jti' => $jti,
-            'token_type' => 'access',
+            'token_type' => $type,
             'ip_address' => $ipAddress,
             'user_agent' => $userAgent,
             'expires_at' => $expiresAt,
@@ -53,14 +86,25 @@ class JwtTokenService
 
     public function validateAccessToken(string $token): array
     {
+        return $this->validateToken($token, 'access');
+    }
+
+    public function validateRefreshToken(string $token): array
+    {
+        return $this->validateToken($token, 'refresh');
+    }
+
+    protected function validateToken(string $token, string $type): array
+    {
         $payload = $this->decode($token);
 
-        if (($payload['typ'] ?? null) !== 'access') {
+        if (($payload['typ'] ?? null) !== $type) {
             throw new RuntimeException('Unsupported token type.');
         }
 
         $tokenRecord = JwtToken::query()
             ->where('jti', $payload['jti'] ?? null)
+            ->where('token_type', $type)
             ->first();
 
         if (! $tokenRecord) {

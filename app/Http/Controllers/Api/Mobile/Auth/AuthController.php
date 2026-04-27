@@ -16,6 +16,7 @@ use App\Support\Auth\JwtTokenService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
+use Throwable;
 
 class AuthController extends MobileApiController
 {
@@ -53,17 +54,10 @@ class AuthController extends MobileApiController
 
         $this->ensureMobileCustomerContext($user);
 
-        $issuedToken = $this->jwtTokenService->issueAccessToken(
-            $user,
-            $request->ip(),
-            $request->userAgent(),
+        return $this->respond(
+            $this->issueMobileSession($user->fresh(['customer']), $request),
+            'Authenticated successfully.'
         );
-
-        return $this->respond([
-            'token' => $issuedToken['token'],
-            'expires_at' => $issuedToken['expires_at']->toIso8601String(),
-            'user' => $this->transformUser($user->fresh(['customer'])),
-        ], 'Authenticated successfully.');
     }
 
     public function register(RegisterRequest $request)
@@ -116,6 +110,49 @@ class AuthController extends MobileApiController
             'email_address' => $email !== '' ? $email : null,
         ]);
 
+        return $this->respond(
+            $this->issueMobileSession($user->fresh(['customer']), $request),
+            'Account created successfully.',
+            201
+        );
+    }
+
+    public function refresh(Request $request)
+    {
+        $refreshToken = trim((string) $request->input('refresh_token', ''));
+
+        if ($refreshToken === '') {
+            return $this->respondValidationError(
+                'A refresh token is required.',
+                ['refresh_token' => ['A refresh token is required.']],
+                401
+            );
+        }
+
+        try {
+            $payload = $this->jwtTokenService->validateRefreshToken($refreshToken);
+            $user = User::query()
+                ->with(['customer', 'userRoles'])
+                ->findOrFail($payload['sub']);
+        } catch (Throwable) {
+            return $this->respondValidationError(
+                'Your session has expired. Please sign in again.',
+                ['refresh_token' => ['Your session has expired. Please sign in again.']],
+                401
+            );
+        }
+
+        if (! $user->is_active) {
+            $this->jwtTokenService->revokeAllForUser($user);
+
+            return $this->respondValidationError(
+                'This account is disabled.',
+                ['refresh_token' => ['This account is disabled.']],
+                401
+            );
+        }
+
+        $this->ensureMobileCustomerContext($user);
         $issuedToken = $this->jwtTokenService->issueAccessToken(
             $user,
             $request->ip(),
@@ -126,7 +163,7 @@ class AuthController extends MobileApiController
             'token' => $issuedToken['token'],
             'expires_at' => $issuedToken['expires_at']->toIso8601String(),
             'user' => $this->transformUser($user->fresh(['customer'])),
-        ], 'Account created successfully.', 201);
+        ], 'Session refreshed successfully.');
     }
 
     public function forgotPassword(ForgotPasswordRequest $request)
@@ -235,7 +272,41 @@ class AuthController extends MobileApiController
             $this->jwtTokenService->revokeByJti($payload['jti']);
         }
 
+        $refreshToken = trim((string) $request->input('refresh_token', ''));
+        if ($refreshToken !== '') {
+            try {
+                $refreshPayload = $this->jwtTokenService->validateRefreshToken($refreshToken);
+                if ((string) ($refreshPayload['sub'] ?? '') === (string) $request->user()?->getKey()) {
+                    $this->jwtTokenService->revokeByJti((string) $refreshPayload['jti']);
+                }
+            } catch (Throwable) {
+                // The access token logout already succeeded; ignore stale refresh tokens.
+            }
+        }
+
         return $this->respond(message: 'Logged out successfully.');
+    }
+
+    protected function issueMobileSession(User $user, Request $request): array
+    {
+        $accessToken = $this->jwtTokenService->issueAccessToken(
+            $user,
+            $request->ip(),
+            $request->userAgent(),
+        );
+        $refreshToken = $this->jwtTokenService->issueRefreshToken(
+            $user,
+            $request->ip(),
+            $request->userAgent(),
+        );
+
+        return [
+            'token' => $accessToken['token'],
+            'expires_at' => $accessToken['expires_at']->toIso8601String(),
+            'refresh_token' => $refreshToken['token'],
+            'refresh_expires_at' => $refreshToken['expires_at']->toIso8601String(),
+            'user' => $this->transformUser($user),
+        ];
     }
 
     protected function transformUser(User $user): array
