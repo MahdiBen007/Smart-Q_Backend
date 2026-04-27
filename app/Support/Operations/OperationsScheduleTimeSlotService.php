@@ -28,6 +28,10 @@ class OperationsScheduleTimeSlotService
             return [];
         }
 
+        if (! $this->isWithinCurrentBookingCycle($schedule, $dateOnly)) {
+            return [];
+        }
+
         $workday = $this->normalizeWorkday($dateOnly->format('D'));
         if ($workday === null) {
             return [];
@@ -221,13 +225,7 @@ class OperationsScheduleTimeSlotService
 
     protected function sessionsForWorkday(array $schedule, string $workday): array
     {
-        $workdays = $schedule['workdays'] ?? [];
-        $normalizedWorkdays = array_values(array_filter(array_map(function ($day): ?string {
-            if (! is_string($day)) {
-                return null;
-            }
-            return $this->normalizeWorkday($day);
-        }, is_array($workdays) ? $workdays : [])));
+        $normalizedWorkdays = $this->normalizedWorkdays($schedule);
 
         if ($normalizedWorkdays !== [] && ! in_array($workday, $normalizedWorkdays, true)) {
             return [];
@@ -261,6 +259,85 @@ class OperationsScheduleTimeSlotService
         }
 
         return [];
+    }
+
+    protected function isWithinCurrentBookingCycle(array $schedule, CarbonInterface $date): bool
+    {
+        $workdays = $this->normalizedWorkdays($schedule);
+        if ($workdays === []) {
+            return false;
+        }
+
+        $today = Carbon::today();
+        $dateOnly = Carbon::parse($date->toDateString());
+
+        if ($dateOnly->lt($today)) {
+            return false;
+        }
+
+        $cycleStartIndex = $this->workdayIndex($workdays[0]);
+        if ($cycleStartIndex === null) {
+            return false;
+        }
+
+        $todayIndex = (int) $today->isoWeekday();
+        $daysSinceCycleStart = ($todayIndex - $cycleStartIndex + 7) % 7;
+        $cycleStart = $today->copy()->subDays($daysSinceCycleStart);
+        $lastOffset = null;
+
+        foreach ($workdays as $workday) {
+            $workdayIndex = $this->workdayIndex($workday);
+            if ($workdayIndex === null) {
+                continue;
+            }
+
+            $offset = ($workdayIndex - $cycleStartIndex + 7) % 7;
+            $lastOffset = $lastOffset === null ? $offset : max($lastOffset, $offset);
+        }
+
+        if ($lastOffset === null) {
+            return false;
+        }
+
+        $cycleEnd = $cycleStart->copy()->addDays($lastOffset);
+
+        return $dateOnly->lte($cycleEnd);
+    }
+
+    protected function normalizedWorkdays(array $schedule): array
+    {
+        $workdays = $schedule['workdays'] ?? [];
+        if (! is_array($workdays)) {
+            return [];
+        }
+
+        $normalized = [];
+        foreach ($workdays as $day) {
+            if (! is_string($day)) {
+                continue;
+            }
+
+            $workday = $this->normalizeWorkday($day);
+            if ($workday !== null && ! in_array($workday, $normalized, true)) {
+                $normalized[] = $workday;
+            }
+        }
+
+        return $normalized;
+    }
+
+    protected function workdayIndex(string $workday): ?int
+    {
+        return match ($workday) {
+            'Mon' => 1,
+            'Tue' => 2,
+            'Wed' => 3,
+            'Thu' => 4,
+            'Fri' => 5,
+            'Sat' => 6,
+            'Sun' => 7,
+            default => null,
+        };
     }
 
     protected function slotsFromSessions(array $sessions): array
