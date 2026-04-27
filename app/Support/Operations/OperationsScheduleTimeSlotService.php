@@ -17,7 +17,7 @@ class OperationsScheduleTimeSlotService
     public function listSlots(string $branchId, string $serviceId, CarbonInterface $date): array
     {
         $context = $this->resolveBookingContext($branchId, $serviceId);
-        $schedule = $this->resolvePublishedSchedulePayload(
+        $schedule = $this->resolveSchedulePayload(
             companyId: $context['company_id'],
             branchId: $branchId,
             serviceId: $serviceId,
@@ -156,20 +156,20 @@ class OperationsScheduleTimeSlotService
         ];
     }
 
-    protected function resolvePublishedSchedulePayload(
+    protected function resolveSchedulePayload(
         string $companyId,
         string $branchId,
         string $serviceId,
     ): ?array {
         $targetKeys = [
-            'service:'.$serviceId,
             'branch:'.$branchId,
+            'service:'.$serviceId,
             'global',
         ];
 
         $schedules = OperationsSchedule::query()
             ->where('company_id', $companyId)
-            ->where('status', 'published')
+            ->whereIn('status', ['draft', 'published'])
             ->whereIn('target_key', $targetKeys)
             ->get()
             ->keyBy('target_key');
@@ -291,7 +291,9 @@ class OperationsScheduleTimeSlotService
                         continue;
                     }
 
-                    $capacity = (int) ($slot['inPerson'] ?? 0);
+                    $remote = (int) ($slot['remote'] ?? 0);
+                    $inPerson = (int) ($slot['inPerson'] ?? 0);
+                    $capacity = max(0, $remote + $inPerson);
                     if ($endMinutes <= $startMinutes) {
                         continue;
                     }
@@ -308,7 +310,7 @@ class OperationsScheduleTimeSlotService
                     $sessionSlots[] = [
                         'start_minutes' => $slot['startMinutes'],
                         'end_minutes' => $slot['endMinutes'],
-                        'capacity' => (int) ($slot['inPerson'] ?? 0),
+                        'capacity' => max(0, (int) ($slot['remote'] ?? 0) + (int) ($slot['inPerson'] ?? 0)),
                     ];
                 }
             }
