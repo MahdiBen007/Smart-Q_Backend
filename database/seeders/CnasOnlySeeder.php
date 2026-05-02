@@ -7,6 +7,7 @@ use App\Enums\EmploymentStatus;
 use App\Enums\UserRoleName;
 use App\Models\Branch;
 use App\Models\Company;
+use App\Models\Counter;
 use App\Models\Service;
 use App\Models\StaffMember;
 use App\Models\User;
@@ -29,12 +30,15 @@ class CnasOnlySeeder extends Seeder
             $tablesToWipe = [
                 'check_in_records',
                 'qr_code_tokens',
+                'booking_slot_locks',
                 'queue_entries',
                 'walk_in_tickets',
                 'appointments',
                 'daily_queue_sessions',
                 'kiosk_devices',
                 'notifications',
+                'counter_service',
+                'counters',
                 'branch_service',
                 'user_roles',
                 'staff_members',
@@ -186,6 +190,11 @@ class CnasOnlySeeder extends Seeder
                 return [$definition['key'] => $service];
             });
 
+            $branchCounters = $this->seedBranchCounters(
+                branches: $branches,
+                services: $services,
+            );
+
             $this->seedDashboardUser(
                 email: 'mahdi@cnas.dz',
                 phoneNumber: '+213550000001',
@@ -219,36 +228,68 @@ class CnasOnlySeeder extends Seeder
 
             $workers = [
                 [
-                    'email' => 'worker1@cnas.dz',
+                    'email' => 'worker.alg01@cnas.dz',
                     'phone' => '+213550000101',
-                    'name' => 'Worker Chifa',
-                    'code' => 'CNAS-WRK-01',
+                    'name' => 'Agent Guichet 1 Alger Centre',
+                    'code' => 'CNAS-WRK-ALG-01',
                     'branch_key' => 'algiers_center',
                     'service_key' => 'carte_chifa',
                 ],
                 [
-                    'email' => 'worker2@cnas.dz',
+                    'email' => 'worker.alg02@cnas.dz',
                     'phone' => '+213550000102',
-                    'name' => 'Worker Dossier',
-                    'code' => 'CNAS-WRK-02',
+                    'name' => 'Agent Guichet 2 Alger Centre',
+                    'code' => 'CNAS-WRK-ALG-02',
+                    'branch_key' => 'algiers_center',
+                    'service_key' => 'depot_dossier',
+                ],
+                [
+                    'email' => 'worker.bez01@cnas.dz',
+                    'phone' => '+213550000103',
+                    'name' => 'Agent Guichet 1 Bab Ezzouar',
+                    'code' => 'CNAS-WRK-BEZ-01',
                     'branch_key' => 'bab_ezzouar',
                     'service_key' => 'depot_dossier',
                 ],
                 [
-                    'email' => 'worker3@cnas.dz',
-                    'phone' => '+213550000103',
-                    'name' => 'Worker Remboursement',
-                    'code' => 'CNAS-WRK-03',
+                    'email' => 'worker.bez02@cnas.dz',
+                    'phone' => '+213550000104',
+                    'name' => 'Agent Guichet 2 Bab Ezzouar',
+                    'code' => 'CNAS-WRK-BEZ-02',
+                    'branch_key' => 'bab_ezzouar',
+                    'service_key' => 'carte_chifa',
+                ],
+                [
+                    'email' => 'worker.orn01@cnas.dz',
+                    'phone' => '+213550000105',
+                    'name' => 'Agent Guichet 1 Oran',
+                    'code' => 'CNAS-WRK-ORN-01',
                     'branch_key' => 'oran',
                     'service_key' => 'remboursement',
                 ],
                 [
-                    'email' => 'worker4@cnas.dz',
-                    'phone' => '+213550000104',
-                    'name' => 'Worker Controle',
-                    'code' => 'CNAS-WRK-04',
+                    'email' => 'worker.orn02@cnas.dz',
+                    'phone' => '+213550000106',
+                    'name' => 'Agent Guichet 2 Oran',
+                    'code' => 'CNAS-WRK-ORN-02',
+                    'branch_key' => 'oran',
+                    'service_key' => 'controle_medical',
+                ],
+                [
+                    'email' => 'worker.cst01@cnas.dz',
+                    'phone' => '+213550000107',
+                    'name' => 'Agent Guichet 1 Constantine',
+                    'code' => 'CNAS-WRK-CST-01',
                     'branch_key' => 'constantine',
                     'service_key' => 'controle_medical',
+                ],
+                [
+                    'email' => 'worker.cst02@cnas.dz',
+                    'phone' => '+213550000108',
+                    'name' => 'Agent Guichet 2 Constantine',
+                    'code' => 'CNAS-WRK-CST-02',
+                    'branch_key' => 'constantine',
+                    'service_key' => 'remboursement',
                 ],
             ];
 
@@ -266,6 +307,53 @@ class CnasOnlySeeder extends Seeder
                     isOnline: true,
                 );
             }
+
+            $this->command?->info('CNAS-only dataset seeded with company, branches, services, counters, admins, and branch workers.');
+        });
+    }
+
+    /**
+     * Create two counters per branch and bind each counter to all branch services.
+     */
+    protected function seedBranchCounters(Collection $branches, Collection $services): Collection
+    {
+        return $branches->mapWithKeys(function (Branch $branch, string $branchKey) use ($services): array {
+            $serviceIds = $services
+                ->filter(function (Service $service) use ($branch): bool {
+                    return $service->branches()
+                        ->whereKey($branch->getKey())
+                        ->exists();
+                })
+                ->map(fn (Service $service) => $service->getKey())
+                ->values()
+                ->all();
+
+            $counters = collect([
+                [
+                    'counter_code' => strtoupper($branch->branch_code).'-G01',
+                    'counter_name' => 'Guichet 1',
+                    'display_order' => 1,
+                ],
+                [
+                    'counter_code' => strtoupper($branch->branch_code).'-G02',
+                    'counter_name' => 'Guichet 2',
+                    'display_order' => 2,
+                ],
+            ])->map(function (array $counterDefinition) use ($branch, $serviceIds): Counter {
+                $counter = Counter::query()->create([
+                    'branch_id' => $branch->getKey(),
+                    'counter_code' => $counterDefinition['counter_code'],
+                    'counter_name' => $counterDefinition['counter_name'],
+                    'is_active' => true,
+                    'display_order' => $counterDefinition['display_order'],
+                ]);
+
+                $counter->services()->sync($serviceIds);
+
+                return $counter;
+            });
+
+            return [$branchKey => $counters];
         });
     }
 

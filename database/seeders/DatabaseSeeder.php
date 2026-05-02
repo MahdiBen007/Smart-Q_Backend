@@ -14,12 +14,18 @@ class DatabaseSeeder extends Seeder
      */
     public function run(): void
     {
-        if (! (bool) env('SEED_OPERATIONAL_SCENARIO', false)) {
+        if ((bool) env('SEED_CNAS_ONLY', false)) {
+            $this->call([
+                CnasOnlySeeder::class,
+            ]);
+
             return;
         }
 
-        $this->call([
-            OperationalScenarioSeeder::class,
-        ]);
+        if ((bool) env('SEED_OPERATIONAL_SCENARIO', false)) {
+            $this->call([
+                OperationalScenarioSeeder::class,
+            ]);
+        }
     }
 }
