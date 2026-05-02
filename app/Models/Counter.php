@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Counter extends Model
 {
@@ -41,5 +42,10 @@ class Counter extends Model
     {
         return $this->belongsToMany(Service::class)
             ->withTimestamps();
+    }
+
+    public function staffMembers(): HasMany
+    {
+        return $this->hasMany(StaffMember::class);
     }
 }

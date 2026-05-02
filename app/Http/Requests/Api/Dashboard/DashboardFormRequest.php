@@ -74,7 +74,34 @@ abstract class DashboardFormRequest extends FormRequest
 
     protected function currentServiceId(): ?string
     {
-        return $this->user()?->staffMember?->service_id;
+        return $this->currentServiceIds()[0] ?? null;
+    }
+
+    /**
+     * @return list<string>
+     */
+    protected function currentServiceIds(): array
+    {
+        $staffMember = $this->user()?->staffMember;
+
+        if (! $staffMember) {
+            return [];
+        }
+
+        $counter = $staffMember->relationLoaded('counter')
+            ? $staffMember->counter
+            : $staffMember->counter()->with('services:id')->first();
+        $serviceIds = $counter?->services?->pluck('id')
+            ->filter()
+            ->values()
+            ->all() ?? [];
+
+        if ($serviceIds === [] && $staffMember->service_id !== null) {
+            // Legacy fallback while existing deployments migrate to counter_id.
+            $serviceIds = [$staffMember->service_id];
+        }
+
+        return $serviceIds;
     }
 
     protected function currentRoleNames(): array
@@ -113,7 +140,7 @@ abstract class DashboardFormRequest extends FormRequest
 
     protected function shouldRestrictToAssignedService(): bool
     {
-        return ! $this->isDashboardAdmin() && $this->currentServiceId() !== null;
+        return ! $this->isDashboardAdmin() && $this->currentServiceIds() !== [];
     }
 
     protected function branchExistsRule(): Exists

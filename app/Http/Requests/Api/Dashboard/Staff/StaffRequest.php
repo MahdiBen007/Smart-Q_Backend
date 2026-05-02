@@ -2,7 +2,7 @@
 
 namespace App\Http\Requests\Api\Dashboard\Staff;
 
-use App\Models\Service;
+use App\Models\Counter;
 use App\Models\StaffMember;
 use App\Http\Requests\Api\Dashboard\DashboardFormRequest;
 use Illuminate\Validation\Validator;
@@ -18,7 +18,7 @@ abstract class StaffRequest extends DashboardFormRequest
             'password_confirmation' => 'password confirmation',
             'phone_number' => 'staff phone number',
             'branch_id' => 'branch',
-            'service_id' => 'service',
+            'counter_id' => 'counter',
             'role' => 'staff role',
             'status' => 'staff status',
             'avatar_url' => 'avatar URL',
@@ -26,18 +26,18 @@ abstract class StaffRequest extends DashboardFormRequest
         ];
     }
 
-    protected function validateServiceAssignment(Validator $validator, bool $isUpdate = false): void
+    protected function validateCounterAssignment(Validator $validator, bool $isUpdate = false): void
     {
         $role = (string) ($this->input('role') ?: ($isUpdate ? $this->currentStaffRoleLabel() : ''));
         $branchId = (string) ($this->input('branch_id') ?: ($isUpdate ? $this->currentStaffBranchId() : ''));
-        $serviceId = $this->input('service_id');
+        $counterId = $this->input('counter_id');
 
         if ($role !== 'Staff') {
             return;
         }
 
-        if (! filled($serviceId)) {
-            $validator->errors()->add('service_id', 'The service field is required for staff members.');
+        if (! filled($counterId)) {
+            $validator->errors()->add('counter_id', 'The counter field is required for staff members.');
             return;
         }
 
@@ -45,17 +45,13 @@ abstract class StaffRequest extends DashboardFormRequest
             return;
         }
 
-        $belongsToBranch = Service::query()
-            ->whereKey($serviceId)
-            ->where(function ($query) use ($branchId): void {
-                $query
-                    ->where('branch_id', $branchId)
-                    ->orWhereHas('branches', fn ($branchQuery) => $branchQuery->whereKey($branchId));
-            })
+        $belongsToBranch = Counter::query()
+            ->whereKey($counterId)
+            ->where('branch_id', $branchId)
             ->exists();
 
         if (! $belongsToBranch) {
-            $validator->errors()->add('service_id', 'The selected service does not belong to the selected branch.');
+            $validator->errors()->add('counter_id', 'The selected counter does not belong to the selected branch.');
         }
     }
 

@@ -16,7 +16,7 @@ class StoreStaffRequest extends StaffRequest
             'password_confirmation' => ['required', 'string', 'min:8'],
             'phone_number' => ['nullable', 'string', 'max:50', 'unique:users,phone_number'],
             'branch_id' => ['required', $this->branchExistsRule()],
-            'service_id' => ['nullable', $this->serviceExistsRule()],
+            'counter_id' => ['nullable', $this->counterExistsRule()],
             'role' => ['required', Rule::in(DashboardCatalog::STAFF_ROLES)],
             'status' => ['required', Rule::in(DashboardCatalog::STAFF_STATUSES)],
             'avatar_url' => ['nullable', 'string'],
@@ -25,6 +25,6 @@ class StoreStaffRequest extends StaffRequest
 
     public function withValidator($validator): void
     {
-        $validator->after(fn ($innerValidator) => $this->validateServiceAssignment($innerValidator));
+        $validator->after(fn ($innerValidator) => $this->validateCounterAssignment($innerValidator));
     }
 }

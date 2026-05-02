@@ -12,7 +12,7 @@ use App\Http\Requests\Api\Dashboard\Staff\UpdateStaffRequest;
 use App\Http\Requests\Api\Dashboard\Staff\UpdateStaffStatusRequest;
 use App\Http\Requests\Api\Dashboard\Staff\UploadStaffAvatarRequest;
 use App\Models\Branch;
-use App\Models\Service;
+use App\Models\Counter;
 use App\Models\StaffMember;
 use App\Models\User;
 use App\Models\UserRole;
@@ -36,11 +36,11 @@ class StaffController extends DashboardApiController
         $branchesQuery = $this->scopeQueryByAssignedBranchColumn($branchesQuery, $request, 'id');
         $branches = $branchesQuery->get();
 
-        $servicesQuery = $this->scopeQueryByCompanyRelation(
-            Service::query()
-                ->select(['id', 'service_name', 'branch_id'])
-                ->with(['branches:id'])
-                ->orderBy('service_name'),
+        $countersQuery = $this->scopeQueryByCompanyRelation(
+            Counter::query()
+                ->select(['id', 'counter_name', 'branch_id'])
+                ->with(['services:id,service_name', 'branch:id'])
+                ->orderBy('counter_name'),
             $request,
             'branch'
         );
@@ -49,15 +49,11 @@ class StaffController extends DashboardApiController
             $branchId = $this->currentBranchId($request);
 
             if ($branchId !== null) {
-                $servicesQuery->where(function (Builder $query) use ($branchId): void {
-                    $query
-                        ->where('branch_id', $branchId)
-                        ->orWhereHas('branches', fn (Builder $branchQuery) => $branchQuery->whereKey($branchId));
-                });
+                $countersQuery->where('branch_id', $branchId);
             }
         }
 
-        $services = $servicesQuery->get();
+        $counters = $countersQuery->get();
 
         return $this->respond([
             'staffMembers' => $this->applyFilters($this->baseQuery($request), $request)
@@ -72,16 +68,13 @@ class StaffController extends DashboardApiController
                 ])
                 ->values()
                 ->all(),
-            'services' => $services
-                ->map(fn (Service $service) => [
-                    'id' => $service->getKey(),
-                    'name' => $service->service_name,
-                    'branchIds' => collect([$service->branch_id])
-                        ->merge($service->branches->pluck('id'))
-                        ->filter()
-                        ->unique()
-                        ->values()
-                        ->all(),
+            'counters' => $counters
+                ->map(fn (Counter $counter) => [
+                    'id' => $counter->getKey(),
+                    'name' => $counter->counter_name,
+                    'branchId' => $counter->branch_id,
+                    'serviceIds' => $counter->services->pluck('id')->values()->all(),
+                    'serviceNames' => $counter->services->pluck('service_name')->values()->all(),
                 ])
                 ->values()
                 ->all(),
@@ -134,7 +127,8 @@ class StaffController extends DashboardApiController
                 'user_id' => $user->getKey(),
                 'company_id' => $branch->company_id,
                 'branch_id' => $branch->getKey(),
-                'service_id' => $role === 'Staff' ? ($validated['service_id'] ?? null) : null,
+                'counter_id' => $role === 'Staff' ? ($validated['counter_id'] ?? null) : null,
+                'service_id' => null,
                 'full_name' => $validated['name'],
                 'display_staff_code' => $this->nextStaffCode(),
                 'employment_status' => $this->mapStatusLabelToEnum($validated['status']),
@@ -191,9 +185,10 @@ class StaffController extends DashboardApiController
 
             $staff->update([
                 'full_name' => $validated['name'] ?? $staff->full_name,
-                'service_id' => $targetRole === 'Staff'
-                    ? ($validated['service_id'] ?? $staff->service_id)
+                'counter_id' => $targetRole === 'Staff'
+                    ? ($validated['counter_id'] ?? $staff->counter_id)
                     : null,
+                'service_id' => null,
                 'employment_status' => $status,
                 'avatar_url' => array_key_exists('avatar_url', $validated) ? $validated['avatar_url'] : $staff->avatar_url,
                 'is_online' => isset($validated['status'])
@@ -222,15 +217,12 @@ class StaffController extends DashboardApiController
         $staff->update([
             'branch_id' => $branch->getKey(),
             'company_id' => $branch->company_id,
-            'service_id' => $staff->service()
-                ->where(function (Builder $query) use ($branch): void {
-                    $query
-                        ->where('services.branch_id', $branch->getKey())
-                        ->orWhereHas('branches', fn (Builder $branchQuery) => $branchQuery->whereKey($branch->getKey()));
-                })
+            'counter_id' => $staff->counter()
+                ->where('counters.branch_id', $branch->getKey())
                 ->exists()
-                ? $staff->service_id
+                ? $staff->counter_id
                 : null,
+            'service_id' => null,
             'last_active_at' => now(),
         ]);
 
@@ -330,7 +322,7 @@ class StaffController extends DashboardApiController
 
     protected function staffRelations(): array
     {
-        return ['user.userRoles', 'branch', 'service', 'company', 'servedQueueEntries.queueSession.service'];
+        return ['user.userRoles', 'branch', 'counter.services', 'company', 'servedQueueEntries.queueSession.service'];
     }
 
     protected function applyFilters(Builder $query, ListStaffRequest $request): Builder
@@ -402,8 +394,10 @@ class StaffController extends DashboardApiController
             'name' => $staff->full_name,
             'email' => $staff->user?->email,
             'branch' => $staff->branch?->branch_name ?? 'Unassigned Branch',
-            'serviceId' => $staff->service?->getKey(),
-            'serviceName' => $staff->service?->service_name,
+            'counterId' => $staff->counter?->getKey(),
+            'counterName' => $staff->counter?->counter_name,
+            'serviceIds' => $staff->counter?->services?->pluck('id')->values()->all() ?? [],
+            'serviceNames' => $staff->counter?->services?->pluck('service_name')->values()->all() ?? [],
             'role' => $roleLabel,
             'status' => DashboardFormatting::employmentStatusLabel($staff->employment_status->value),
             'performance' => $performance,
@@ -425,7 +419,7 @@ class StaffController extends DashboardApiController
         return match ($role) {
             'admin' => 'Company Administrator',
             'manager' => 'Branch Administrator',
-            default => 'Assigned Service Operator',
+            default => 'Assigned Counter Operator',
         };
     }
 

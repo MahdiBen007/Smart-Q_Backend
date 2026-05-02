@@ -17,7 +17,7 @@ class UpdateStaffRequest extends StaffRequest
             'name' => ['sometimes', 'string', 'max:255'],
             'email' => ['sometimes', 'email', Rule::unique('users', 'email')->ignore($staff->user_id)],
             'phone_number' => ['sometimes', 'nullable', 'string', 'max:50', Rule::unique('users', 'phone_number')->ignore($staff->user_id)],
-            'service_id' => ['sometimes', 'nullable', $this->serviceExistsRule()],
+            'counter_id' => ['sometimes', 'nullable', $this->counterExistsRule()],
             'role' => ['sometimes', Rule::in(DashboardCatalog::STAFF_ROLES)],
             'status' => ['sometimes', Rule::in(DashboardCatalog::STAFF_STATUSES)],
             'avatar_url' => ['sometimes', 'nullable', 'string'],
@@ -26,6 +26,6 @@ class UpdateStaffRequest extends StaffRequest
 
     public function withValidator($validator): void
     {
-        $validator->after(fn ($innerValidator) => $this->validateServiceAssignment($innerValidator, true));
+        $validator->after(fn ($innerValidator) => $this->validateCounterAssignment($innerValidator, true));
     }
 }

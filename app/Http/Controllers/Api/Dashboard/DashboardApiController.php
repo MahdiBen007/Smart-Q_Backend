@@ -123,7 +123,34 @@ abstract class DashboardApiController extends Controller
 
     protected function currentServiceId(?Request $request = null): ?string
     {
-        return $request?->user()?->staffMember?->service_id;
+        return $this->currentServiceIds($request)[0] ?? null;
+    }
+
+    /**
+     * @return list<string>
+     */
+    protected function currentServiceIds(?Request $request = null): array
+    {
+        $staffMember = $request?->user()?->staffMember;
+
+        if (! $staffMember) {
+            return [];
+        }
+
+        $counter = $staffMember->relationLoaded('counter')
+            ? $staffMember->counter
+            : $staffMember->counter()->with('services:id')->first();
+        $serviceIds = $counter?->services?->pluck('id')
+            ->filter()
+            ->values()
+            ->all() ?? [];
+
+        if ($serviceIds === [] && $staffMember->service_id !== null) {
+            // Legacy fallback while existing deployments migrate to counter_id.
+            $serviceIds = [$staffMember->service_id];
+        }
+
+        return $serviceIds;
     }
 
     protected function currentRoleNames(?Request $request = null): array
@@ -163,7 +190,7 @@ abstract class DashboardApiController extends Controller
 
     protected function shouldRestrictToAssignedService(?Request $request = null): bool
     {
-        return ! $this->isDashboardAdmin($request) && $this->currentServiceId($request) !== null;
+        return ! $this->isDashboardAdmin($request) && $this->currentServiceIds($request) !== [];
     }
 
     protected function scopeQueryByCompanyColumn(
@@ -229,13 +256,13 @@ abstract class DashboardApiController extends Controller
         Request $request,
         string $column = 'service_id',
     ): Builder {
-        $serviceId = $this->currentServiceId($request);
+        $serviceIds = $this->currentServiceIds($request);
 
-        if (! $this->shouldRestrictToAssignedService($request) || $serviceId === null) {
+        if (! $this->shouldRestrictToAssignedService($request) || $serviceIds === []) {
             return $query;
         }
 
-        return $query->where($column, $serviceId);
+        return $query->whereIn($column, $serviceIds);
     }
 
     protected function scopeQueryByAssignedServiceRelation(
@@ -244,13 +271,13 @@ abstract class DashboardApiController extends Controller
         string $relation,
         string $column = 'id',
     ): Builder {
-        $serviceId = $this->currentServiceId($request);
+        $serviceIds = $this->currentServiceIds($request);
 
-        if (! $this->shouldRestrictToAssignedService($request) || $serviceId === null) {
+        if (! $this->shouldRestrictToAssignedService($request) || $serviceIds === []) {
             return $query;
         }
 
-        return $query->whereHas($relation, fn (Builder $relationQuery) => $relationQuery->where($column, $serviceId));
+        return $query->whereHas($relation, fn (Builder $relationQuery) => $relationQuery->whereIn($column, $serviceIds));
     }
 
     protected function ensureCompanyAccess(Request $request, Model $model): void
@@ -295,19 +322,21 @@ abstract class DashboardApiController extends Controller
 
         abort_unless($hasBranchAccess, 404);
 
-        $serviceId = $this->currentServiceId($request);
+        $serviceIds = $this->currentServiceIds($request);
 
-        if (! $this->shouldRestrictToAssignedService($request) || $serviceId === null) {
+        if (! $this->shouldRestrictToAssignedService($request) || $serviceIds === []) {
             return;
         }
 
         $hasServiceAccess = match (true) {
-            $model instanceof Service => $model->getKey() === $serviceId,
-            $model instanceof StaffMember => $model->service_id === null || $model->service_id === $serviceId,
-            $model instanceof Appointment => $model->service_id === $serviceId,
-            $model instanceof WalkInTicket => $model->service_id === $serviceId,
-            $model instanceof DailyQueueSession => $model->service_id === $serviceId,
-            $model instanceof QueueEntry => $model->queueSession?->service_id === $serviceId,
+            $model instanceof Service => in_array($model->getKey(), $serviceIds, true),
+            $model instanceof StaffMember => $model->counter_id === null
+                || $model->counter?->services()->whereIn('services.id', $serviceIds)->exists()
+                || ($model->service_id !== null && in_array($model->service_id, $serviceIds, true)),
+            $model instanceof Appointment => in_array($model->service_id, $serviceIds, true),
+            $model instanceof WalkInTicket => in_array($model->service_id, $serviceIds, true),
+            $model instanceof DailyQueueSession => in_array($model->service_id, $serviceIds, true),
+            $model instanceof QueueEntry => in_array((string) $model->queueSession?->service_id, $serviceIds, true),
             default => true,
         };
 
