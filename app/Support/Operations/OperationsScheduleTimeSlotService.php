@@ -418,10 +418,48 @@ class OperationsScheduleTimeSlotService
             return false;
         }
 
-        // Booking window is always "today -> end of current calendar week (Saturday)".
-        $cycleEnd = $today->copy()->endOfWeek(Carbon::SATURDAY)->startOfDay();
+        $currentWeekEnd = $today->copy()->endOfWeek(Carbon::SATURDAY)->startOfDay();
+        if ($dateOnly->lte($currentWeekEnd)) {
+            return true;
+        }
 
-        return $dateOnly->lte($cycleEnd);
+        // If the current week has no remaining configured workday from today onward,
+        // allow booking into the upcoming week window.
+        if ($this->hasRemainingWorkdayInCurrentWeek($schedule, $today, $currentWeekEnd)) {
+            return false;
+        }
+
+        $nextWeekStart = $currentWeekEnd->copy()->addDay();
+        $nextWeekEnd = $currentWeekEnd->copy()->addDays(7);
+
+        return $dateOnly->betweenIncluded($nextWeekStart, $nextWeekEnd);
+    }
+
+    protected function hasRemainingWorkdayInCurrentWeek(
+        array $schedule,
+        CarbonInterface $today,
+        CarbonInterface $currentWeekEnd,
+    ): bool {
+        $workdays = $this->normalizedWorkdays($schedule);
+        if ($workdays === []) {
+            return false;
+        }
+
+        $todayDayOfWeek = (int) $today->dayOfWeek; // 0=Sun ... 6=Sat
+        $endDayOfWeek = (int) $currentWeekEnd->dayOfWeek;
+
+        foreach ($workdays as $workday) {
+            $workdayIndex = $this->workdayDayOfWeekIndex($workday);
+            if ($workdayIndex === null) {
+                continue;
+            }
+
+            if ($workdayIndex >= $todayDayOfWeek && $workdayIndex <= $endDayOfWeek) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     protected function normalizedWorkdays(array $schedule): array
@@ -456,6 +494,20 @@ class OperationsScheduleTimeSlotService
             'Fri' => 5,
             'Sat' => 6,
             'Sun' => 7,
+            default => null,
+        };
+    }
+
+    protected function workdayDayOfWeekIndex(string $workday): ?int
+    {
+        return match ($workday) {
+            'Sun' => Carbon::SUNDAY,
+            'Mon' => Carbon::MONDAY,
+            'Tue' => Carbon::TUESDAY,
+            'Wed' => Carbon::WEDNESDAY,
+            'Thu' => Carbon::THURSDAY,
+            'Fri' => Carbon::FRIDAY,
+            'Sat' => Carbon::SATURDAY,
             default => null,
         };
     }
