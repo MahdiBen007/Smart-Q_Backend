@@ -20,18 +20,33 @@ return new class extends Migration
         });
 
         // Backfill counter assignment for existing staff by matching branch + service.
-        DB::statement("
-            UPDATE staff_members sm
-            LEFT JOIN (
-                SELECT cs2.service_id, c2.branch_id, MIN(c2.id) AS first_counter_id
-                FROM counter_service cs2
-                JOIN counters c2 ON c2.id = cs2.counter_id
-                GROUP BY cs2.service_id, c2.branch_id
-            ) map ON map.service_id = sm.service_id AND map.branch_id = sm.branch_id
-            SET sm.counter_id = map.first_counter_id
-            WHERE sm.counter_id IS NULL
-              AND sm.service_id IS NOT NULL
-        ");
+        if (DB::getDriverName() === 'sqlite') {
+            DB::statement("
+                UPDATE staff_members
+                SET counter_id = (
+                    SELECT MIN(c.id)
+                    FROM counter_service cs
+                    JOIN counters c ON c.id = cs.counter_id
+                    WHERE cs.service_id = staff_members.service_id
+                      AND c.branch_id = staff_members.branch_id
+                )
+                WHERE counter_id IS NULL
+                  AND service_id IS NOT NULL
+            ");
+        } else {
+            DB::statement("
+                UPDATE staff_members sm
+                LEFT JOIN (
+                    SELECT cs2.service_id, c2.branch_id, MIN(c2.id) AS first_counter_id
+                    FROM counter_service cs2
+                    JOIN counters c2 ON c2.id = cs2.counter_id
+                    GROUP BY cs2.service_id, c2.branch_id
+                ) map ON map.service_id = sm.service_id AND map.branch_id = sm.branch_id
+                SET sm.counter_id = map.first_counter_id
+                WHERE sm.counter_id IS NULL
+                  AND sm.service_id IS NOT NULL
+            ");
+        }
     }
 
     public function down(): void

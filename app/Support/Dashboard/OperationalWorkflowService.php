@@ -83,12 +83,14 @@ class OperationalWorkflowService
 
         $synced = $this->syncTodaysAppointmentsToQueue($companyId);
         $requeued = 0;
+        $missedTimeoutCancelled = $this->cancelEntriesByCallingTimeout($companyId, $absentGraceSeconds);
         $pruned = $this->pruneInvalidAppointmentQueueEntries($companyId);
         $cancelled = $this->cancelUnattendedPastAppointments($companyId);
 
         return [
             'synced' => $synced,
             'requeued' => $requeued,
+            'missed_timeout_cancelled' => $missedTimeoutCancelled,
             'pruned' => $pruned,
             'cancelled' => $cancelled,
         ];
@@ -411,6 +413,10 @@ class OperationalWorkflowService
                 'customer_id' => $customer->getKey(),
                 'queue_position' => $this->nextQueuePosition($session),
                 'queue_status' => QueueEntryStatus::Waiting,
+                'queue_type' => ($customer->user?->user_type ?? null) === BookingCodeFormatter::SPECIAL_NEEDS_TYPE
+                    ? 'priority'
+                    : 'regular',
+                'wait_timeout_seconds' => self::ABSENT_CHECK_IN_GRACE_SECONDS,
                 'ticket_id' => $ticket->getKey(),
             ]);
 
@@ -691,7 +697,9 @@ class OperationalWorkflowService
                 'customer_id' => $appointment->customer_id,
                 'queue_position' => $nextPosition,
                 'queue_status' => QueueEntryStatus::Waiting,
+                'queue_type' => $isSpecialNeeds ? 'priority' : 'regular',
                 'checked_in_at' => $markCheckedIn ? now() : null,
+                'wait_timeout_seconds' => self::ABSENT_CHECK_IN_GRACE_SECONDS,
                 'appointment_id' => $appointment->getKey(),
             ]);
 
@@ -789,6 +797,9 @@ class OperationalWorkflowService
             $entry->update([
                 'queue_position' => $index + 1,
                 'queue_status' => $status,
+                'calling_started_at' => in_array($status, [QueueEntryStatus::Serving, QueueEntryStatus::Next], true)
+                    ? ($entry->calling_started_at ?? now())
+                    : null,
                 'service_started_at' => $status === QueueEntryStatus::Serving
                     ? ($entry->service_started_at ?? now())
                     : null,
@@ -830,6 +841,7 @@ class OperationalWorkflowService
             $entry->update([
                 'queue_position' => $index + 1,
                 'queue_status' => $status,
+                'calling_started_at' => null,
                 'service_started_at' => null,
             ]);
 
@@ -1038,6 +1050,119 @@ class OperationalWorkflowService
             description: "Your {$serviceName} request at {$branchName} was completed.",
             tone: 'success',
             messageContent: "Your queue request for {$serviceName} has been completed by staff.",
+            actionPath: '/my-tickets',
+        );
+    }
+
+    protected function cancelEntriesByCallingTimeout(
+        ?string $companyId = null,
+        int $absentGraceSeconds = self::ABSENT_CHECK_IN_GRACE_SECONDS,
+    ): int {
+        $expiredEntriesQuery = QueueEntry::query()
+            ->with([
+                'queueSession',
+                'queueSession.branch',
+                'queueSession.service',
+                'customer.user',
+                'appointment.customer.user',
+                'walkInTicket.customer.user',
+            ])
+            ->whereIn('queue_status', [QueueEntryStatus::Serving->value, QueueEntryStatus::Next->value])
+            ->whereNull('checked_in_at')
+            ->whereNotNull('calling_started_at');
+
+        if ($companyId !== null) {
+            $expiredEntriesQuery->whereHas('queueSession.branch', fn ($query) => $query->where('company_id', $companyId));
+        }
+
+        $cancelledCount = 0;
+        $sessions = [];
+
+        $expiredEntriesQuery->chunk(200, function (Collection $entries) use (&$cancelledCount, &$sessions): void {
+            foreach ($entries as $entry) {
+                DB::transaction(function () use ($entry, &$cancelledCount, &$sessions): void {
+                    /** @var QueueEntry|null $locked */
+                    $locked = QueueEntry::query()
+                        ->with([
+                            'queueSession',
+                            'queueSession.branch',
+                            'queueSession.service',
+                            'customer.user',
+                            'appointment.customer.user',
+                            'walkInTicket.customer.user',
+                        ])
+                        ->lockForUpdate()
+                        ->find($entry->getKey());
+
+                    if (! $locked) {
+                        return;
+                    }
+
+                    if (
+                        ! in_array($locked->queue_status->value, [QueueEntryStatus::Serving->value, QueueEntryStatus::Next->value], true)
+                        || $locked->checked_in_at !== null
+                    ) {
+                        return;
+                    }
+
+                    $referenceStart = $locked->calling_started_at;
+                    $timeoutSeconds = max((int) ($locked->wait_timeout_seconds ?: self::ABSENT_CHECK_IN_GRACE_SECONDS), 1);
+                    if (! $referenceStart || $referenceStart->copy()->addSeconds($timeoutSeconds)->isFuture()) {
+                        return;
+                    }
+
+                    $session = $locked->queueSession;
+                    if (! $session) {
+                        return;
+                    }
+
+                    $locked->update([
+                        'queue_status' => QueueEntryStatus::Cancelled,
+                        'calling_started_at' => null,
+                        'service_started_at' => null,
+                        'reserved_by_counter_id' => null,
+                        'reserved_until' => null,
+                        'cancel_reason' => 'missed_timeout',
+                    ]);
+
+                    if ($locked->walkInTicket) {
+                        $locked->walkInTicket->update([
+                            'ticket_status' => TicketStatus::Escalated,
+                        ]);
+                    }
+
+                    $this->archiveQueueEntry($session, $locked, clearServiceStartedAt: true);
+                    $sessions[$session->getKey()] = $session;
+                    $cancelledCount++;
+                    $this->notifyQueueEntryMissedTimeout($locked->refresh());
+                });
+            }
+        });
+
+        foreach ($sessions as $session) {
+            $this->normalizeActiveEntries($session);
+        }
+
+        return $cancelledCount;
+    }
+
+    protected function notifyQueueEntryMissedTimeout(QueueEntry $entry): void
+    {
+        $entry->loadMissing(['queueSession.branch', 'queueSession.service', 'customer.user']);
+        $userId = $this->resolveQueueEntryUserId($entry);
+        if ($userId === null) {
+            return;
+        }
+
+        $branchName = $entry->queueSession?->branch?->branch_name ?? 'branch';
+        $serviceName = $entry->queueSession?->service?->service_name ?? 'service';
+
+        $this->dispatchMobileQueueNotification(
+            userId: $userId,
+            title: 'Booking cancelled',
+            description: "Your {$serviceName} booking at {$branchName} was cancelled due to no-show.",
+            tone: 'warning',
+            messageContent: 'Your booking was cancelled because you did not arrive within the allowed waiting time.',
             actionPath: '/my-tickets',
         );
     }

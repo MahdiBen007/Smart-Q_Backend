@@ -7,6 +7,7 @@ use App\Http\Requests\Api\Dashboard\QueueMonitor\ResolveQueueSessionRequest;
 use App\Http\Requests\Api\Dashboard\QueueMonitor\StoreQueueEntryRequest;
 use App\Http\Requests\Api\Dashboard\QueueMonitor\UpdateQueueSessionStatusRequest;
 use App\Models\Branch;
+use App\Models\Counter;
 use App\Models\DailyQueueSession;
 use App\Models\QueueEntry;
 use App\Models\Service;
@@ -24,6 +25,14 @@ class QueueMonitorController extends DashboardApiController
 
     public function bootstrap(Request $request)
     {
+        $staffMember = $request->user()?->staffMember;
+        $workerCounterName = null;
+        if ($staffMember?->counter_id) {
+            $workerCounterName = Counter::query()
+                ->whereKey($staffMember->counter_id)
+                ->value('counter_name');
+        }
+
         $this->workflow->runQueueAutomationCycle($this->currentCompanyId($request));
 
         $today = now()->toDateString();
@@ -126,6 +135,7 @@ class QueueMonitorController extends DashboardApiController
                 'queueFilter' => 'All',
             ],
             'newTicketCounterStart' => (int) \App\Models\WalkInTicket::query()->max('ticket_number'),
+            'workerCounterName' => $workerCounterName,
         ]);
     }
 
@@ -314,6 +324,7 @@ class QueueMonitorController extends DashboardApiController
                 : ($entry->appointment ? 'Not Arrived' : '--'),
             'startedAt' => $entry->service_started_at ? DashboardFormatting::shortTime($entry->service_started_at) : '--',
             'counter' => null,
+            'queueType' => $entry->queue_type ?? 'regular',
             'status' => DashboardFormatting::queueStatusLabel($entry->queue_status->value),
             'eta' => $displayEta,
             'awaitingCheckIn' => $isAwaitingCheckIn,

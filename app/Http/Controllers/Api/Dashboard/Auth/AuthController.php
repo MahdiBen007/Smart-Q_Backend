@@ -35,7 +35,7 @@ class AuthController extends DashboardApiController
         }
 
         $user = User::query()
-            ->with(['userRoles', 'staffMember.branch.company', 'preference'])
+            ->with(['userRoles', 'staffMember.branch.company', 'staffMember.counter', 'preference'])
             ->where('email', $request->string('email')->value())
             ->first();
 
@@ -64,7 +64,7 @@ class AuthController extends DashboardApiController
 
         return $this->respondWithAuthCookie([
             'expires_at' => $issuedToken['expires_at']->toIso8601String(),
-            'user' => $this->transformUser($user->fresh(['userRoles', 'staffMember.branch.company', 'preference'])),
+            'user' => $this->transformUser($user->fresh(['userRoles', 'staffMember.branch.company', 'staffMember.counter', 'preference'])),
         ], $issuedToken['token'], $remember, 'Authenticated successfully.');
     }
 
@@ -86,7 +86,7 @@ class AuthController extends DashboardApiController
         $user = $request->user();
 
         return $this->respond(
-            $this->transformUser($user->loadMissing(['userRoles', 'staffMember.branch.company', 'preference']))
+            $this->transformUser($user->loadMissing(['userRoles', 'staffMember.branch.company', 'staffMember.counter', 'preference']))
         );
     }
 
@@ -112,7 +112,7 @@ class AuthController extends DashboardApiController
         }
 
         return $this->respond(
-            $this->transformUser($user->fresh(['userRoles', 'staffMember.branch.company', 'preference'])),
+            $this->transformUser($user->fresh(['userRoles', 'staffMember.branch.company', 'staffMember.counter', 'preference'])),
             'Profile updated successfully.'
         );
     }
@@ -220,6 +220,10 @@ class AuthController extends DashboardApiController
                 'company' => $staffMember->company ? [
                     'id' => $staffMember->company->getKey(),
                     'name' => $staffMember->company->company_name,
+                ] : null,
+                'counter' => $staffMember->counter ? [
+                    'id' => $staffMember->counter->getKey(),
+                    'name' => $staffMember->counter->counter_name,
                 ] : null,
             ] : null,
             'preferences' => $user->preference?->dashboard_settings,

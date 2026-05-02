@@ -411,43 +411,15 @@ class OperationsScheduleTimeSlotService
 
     protected function isWithinCurrentBookingCycle(array $schedule, CarbonInterface $date): bool
     {
-        $workdays = $this->normalizedWorkdays($schedule);
-        if ($workdays === []) {
-            return false;
-        }
-
-        $today = Carbon::today($this->bookingTimezone());
         $dateOnly = Carbon::parse($date->toDateString(), $this->bookingTimezone())->startOfDay();
+        $today = Carbon::today($this->bookingTimezone());
 
         if ($dateOnly->lt($today)) {
             return false;
         }
 
-        $cycleStartIndex = $this->workdayIndex($workdays[0]);
-        if ($cycleStartIndex === null) {
-            return false;
-        }
-
-        $todayIndex = (int) $today->isoWeekday();
-        $daysSinceCycleStart = ($todayIndex - $cycleStartIndex + 7) % 7;
-        $cycleStart = $today->copy()->subDays($daysSinceCycleStart);
-        $lastOffset = null;
-
-        foreach ($workdays as $workday) {
-            $workdayIndex = $this->workdayIndex($workday);
-            if ($workdayIndex === null) {
-                continue;
-            }
-
-            $offset = ($workdayIndex - $cycleStartIndex + 7) % 7;
-            $lastOffset = $lastOffset === null ? $offset : max($lastOffset, $offset);
-        }
-
-        if ($lastOffset === null) {
-            return false;
-        }
-
-        $cycleEnd = $cycleStart->copy()->addDays($lastOffset);
+        // Booking window is always "today -> end of current calendar week (Saturday)".
+        $cycleEnd = $today->copy()->endOfWeek(Carbon::SATURDAY)->startOfDay();
 
         return $dateOnly->lte($cycleEnd);
     }

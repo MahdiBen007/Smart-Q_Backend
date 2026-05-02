@@ -21,9 +21,15 @@ class QueueEntry extends Model
         'customer_id',
         'queue_position',
         'queue_status',
+        'queue_type',
         'checked_in_at',
+        'calling_started_at',
+        'wait_timeout_seconds',
         'service_started_at',
         'served_by_staff_id',
+        'reserved_by_counter_id',
+        'reserved_until',
+        'cancel_reason',
         'appointment_id',
         'ticket_id',
     ];
@@ -34,7 +40,10 @@ class QueueEntry extends Model
             'queue_position' => 'integer',
             'queue_status' => QueueEntryStatus::class,
             'checked_in_at' => 'datetime',
+            'calling_started_at' => 'datetime',
+            'wait_timeout_seconds' => 'integer',
             'service_started_at' => 'datetime',
+            'reserved_until' => 'datetime',
         ];
     }
 
