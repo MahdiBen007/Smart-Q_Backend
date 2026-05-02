@@ -221,6 +221,45 @@ class CnasOnlySeeder extends Seeder
                 isOnline: true,
             );
 
+            $this->seedDashboardUser(
+                email: 'mahdibensaleh200@gmail.com',
+                phoneNumber: '+213550000006',
+                password: '12345678',
+                role: UserRoleName::Admin,
+                companyId: $company->getKey(),
+                branchId: $branches['algiers_center']->getKey(),
+                serviceId: null,
+                fullName: 'Mahdi Ben Saleh',
+                displayStaffCode: 'CNAS-ADM-03',
+                isOnline: true,
+            );
+
+            $this->seedDashboardUser(
+                email: 'moumen@gmail.com',
+                phoneNumber: '+213550000007',
+                password: '12345678',
+                role: UserRoleName::Admin,
+                companyId: $company->getKey(),
+                branchId: $branches['algiers_center']->getKey(),
+                serviceId: null,
+                fullName: 'Moumen',
+                displayStaffCode: 'CNAS-ADM-04',
+                isOnline: true,
+            );
+
+            $this->seedDashboardUser(
+                email: 'raouf@gmail.com',
+                phoneNumber: '+213550000008',
+                password: '12345678',
+                role: UserRoleName::Admin,
+                companyId: $company->getKey(),
+                branchId: $branches['algiers_center']->getKey(),
+                serviceId: null,
+                fullName: 'Raouf',
+                displayStaffCode: 'CNAS-ADM-05',
+                isOnline: true,
+            );
+
             $this->seedBranchAdmins(
                 companyId: $company->getKey(),
                 branches: $branches,
