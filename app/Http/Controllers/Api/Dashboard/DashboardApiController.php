@@ -9,8 +9,8 @@ use App\Models\DailyQueueSession;
 use App\Models\QueueEntry;
 use App\Models\Service;
 use App\Models\StaffMember;
-use App\Models\WalkInTicket;
 use App\Models\User;
+use App\Models\WalkInTicket;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\JsonResponse;
@@ -42,6 +42,18 @@ abstract class DashboardApiController extends Controller
         }
 
         return response()->json($payload, $status);
+    }
+
+    protected function respondValidationError(
+        string $message,
+        array $errors = [],
+        int $status = 422,
+    ): JsonResponse {
+        return response()->json([
+            'success' => false,
+            'message' => $message,
+            'errors' => $errors,
+        ], $status);
     }
 
     protected function rememberPayload(string $key, callable $callback, int $seconds = 15): mixed

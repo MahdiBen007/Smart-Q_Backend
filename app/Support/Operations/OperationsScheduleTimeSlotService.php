@@ -3,6 +3,7 @@
 namespace App\Support\Operations;
 
 use App\Models\Appointment;
+use App\Models\BookingSlotLock;
 use App\Models\Branch;
 use App\Models\OperationsSchedule;
 use App\Models\Service;
@@ -10,6 +11,7 @@ use App\Models\WalkInTicket;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
@@ -22,8 +24,7 @@ class OperationsScheduleTimeSlotService
         string $serviceId,
         CarbonInterface $date,
         string $bookingChannel = 'in_person',
-    ): array
-    {
+    ): array {
         $bookingChannel = $this->normalizeBookingChannel($bookingChannel);
         $context = $this->resolveBookingContext($branchId, $serviceId);
         $schedule = $this->resolveSchedulePayload(
@@ -163,6 +164,40 @@ class OperationsScheduleTimeSlotService
         return $match;
     }
 
+    public function acquireBookingSlotLock(
+        string $branchId,
+        string $serviceId,
+        CarbonInterface $date,
+        string $time,
+        string $bookingChannel,
+    ): BookingSlotLock {
+        $normalizedTime = $this->normalizeTime($time);
+        if ($normalizedTime === null) {
+            throw ValidationException::withMessages([
+                'appointment_time' => ['Invalid appointment time.'],
+            ]);
+        }
+
+        $attributes = [
+            'branch_id' => $branchId,
+            'service_id' => $serviceId,
+            'slot_date' => Carbon::parse($date->toDateString(), $this->bookingTimezone())->toDateString(),
+            'slot_start_time' => $normalizedTime.':00',
+            'booking_channel' => $this->normalizeBookingChannel($bookingChannel),
+        ];
+
+        $this->ensureBookingSlotLockRow($attributes);
+
+        return BookingSlotLock::query()
+            ->where('branch_id', $attributes['branch_id'])
+            ->where('service_id', $attributes['service_id'])
+            ->whereDate('slot_date', $attributes['slot_date'])
+            ->whereTime('slot_start_time', $attributes['slot_start_time'])
+            ->where('booking_channel', $attributes['booking_channel'])
+            ->lockForUpdate()
+            ->firstOrFail();
+    }
+
     public function ensureCurrentWalkInSlotIsBookable(
         string $branchId,
         string $serviceId,
@@ -200,6 +235,43 @@ class OperationsScheduleTimeSlotService
         return $currentSlot;
     }
 
+    public function ensureCurrentWalkInSlotIsBookableWithLock(
+        string $branchId,
+        string $serviceId,
+    ): array {
+        $candidate = $this->ensureCurrentWalkInSlotIsBookable($branchId, $serviceId);
+
+        $this->acquireBookingSlotLock(
+            branchId: $branchId,
+            serviceId: $serviceId,
+            date: Carbon::now($this->bookingTimezone()),
+            time: (string) ($candidate['time'] ?? ''),
+            bookingChannel: 'in_person',
+        );
+
+        return $this->ensureCurrentWalkInSlotIsBookable($branchId, $serviceId);
+    }
+
+    protected function ensureBookingSlotLockRow(array $attributes): void
+    {
+        try {
+            BookingSlotLock::query()->firstOrCreate($attributes);
+        } catch (QueryException $exception) {
+            if (! $this->isUniqueConstraintViolation($exception)) {
+                throw $exception;
+            }
+        }
+    }
+
+    protected function isUniqueConstraintViolation(QueryException $exception): bool
+    {
+        $sqlState = (string) ($exception->errorInfo[0] ?? $exception->getCode());
+        $driverCode = (string) ($exception->errorInfo[1] ?? '');
+
+        return in_array($sqlState, ['23000', '23505'], true)
+            || $driverCode === '19';
+    }
+
     protected function resolveBookingContext(string $branchId, string $serviceId): array
     {
         $branch = Branch::query()->select(['id', 'company_id'])->findOrFail($branchId);
@@ -215,13 +287,13 @@ class OperationsScheduleTimeSlotService
 
         $assignedToBranch = $service->branch_id === $branchId || $pivot !== null;
         if (! $assignedToBranch) {
-            throw (new ModelNotFoundException())->setModel(Service::class, [$serviceId]);
+            throw (new ModelNotFoundException)->setModel(Service::class, [$serviceId]);
         }
 
         $activeOverride = $pivot?->is_active_override;
         $serviceActive = $activeOverride !== null ? (bool) $activeOverride : ((bool) ($service->is_active ?? true));
         if (! $serviceActive) {
-            throw (new ModelNotFoundException())->setModel(Service::class, [$serviceId]);
+            throw (new ModelNotFoundException)->setModel(Service::class, [$serviceId]);
         }
 
         return [
@@ -509,8 +581,7 @@ class OperationsScheduleTimeSlotService
         string $serviceId,
         string $appointmentDate,
         string $bookingChannel,
-    ): array
-    {
+    ): array {
         $appointments = Appointment::query()
             ->where('branch_id', $branchId)
             ->where('service_id', $serviceId)
@@ -612,6 +683,7 @@ class OperationsScheduleTimeSlotService
     protected function normalizeWorkday(string $value): ?string
     {
         $candidate = strtolower(substr(trim($value), 0, 3));
+
         return match ($candidate) {
             'mon' => 'Mon',
             'tue' => 'Tue',

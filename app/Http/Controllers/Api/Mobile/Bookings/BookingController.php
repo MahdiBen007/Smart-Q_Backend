@@ -45,27 +45,6 @@ class BookingController extends MobileApiController
         $appointmentDate = Carbon::parse((string) $request->input('appointment_date'))
             ->toDateString();
         $serviceId = $request->string('service_id')->value();
-
-        $this->purgeIncompleteAppointments($customer, $serviceId, $appointmentDate);
-
-        $alreadyBookedToday = Appointment::query()
-            ->where('customer_id', $customer->getKey())
-            ->where('service_id', $serviceId)
-            ->whereDate('appointment_date', $appointmentDate)
-            ->where('appointment_status', '!=', 'cancelled')
-            ->exists();
-
-        if ($alreadyBookedToday) {
-            return $this->respondValidationError(
-                'You already have a booking for this service today. Cancel it first to create a new one.',
-                [
-                    'service_id' => [
-                        'One booking per service is allowed per day unless the existing booking is cancelled.',
-                    ],
-                ],
-            );
-        }
-
         $branchId = $request->string('branch_id')->value();
         $appointmentTime = (string) $request->input('appointment_time');
         $bookingChannel = $request->string('booking_channel', 'remote')->value();
@@ -79,10 +58,36 @@ class BookingController extends MobileApiController
                 $serviceId,
                 $bookingChannel,
             ): array {
-                DB::table('branches')
-                    ->where('id', $branchId)
+                Customer::query()
+                    ->whereKey($customer->getKey())
                     ->lockForUpdate()
                     ->first();
+
+                $this->purgeIncompleteAppointments($customer, $serviceId, $appointmentDate);
+
+                $alreadyBookedToday = Appointment::query()
+                    ->where('customer_id', $customer->getKey())
+                    ->where('service_id', $serviceId)
+                    ->whereDate('appointment_date', $appointmentDate)
+                    ->where('appointment_status', '!=', 'cancelled')
+                    ->lockForUpdate()
+                    ->exists();
+
+                if ($alreadyBookedToday) {
+                    throw ValidationException::withMessages([
+                        'service_id' => [
+                            'One booking per service is allowed per day unless the existing booking is cancelled.',
+                        ],
+                    ]);
+                }
+
+                $this->timeSlots->acquireBookingSlotLock(
+                    branchId: $branchId,
+                    serviceId: $serviceId,
+                    date: Carbon::parse($appointmentDate),
+                    time: $appointmentTime,
+                    bookingChannel: $bookingChannel,
+                );
 
                 $bookableSlot = $this->timeSlots->ensureSlotIsBookable(
                     branchId: $branchId,
@@ -134,6 +139,7 @@ class BookingController extends MobileApiController
             return $this->respondValidationError(
                 $firstError ?: 'Selected appointment slot is not available.',
                 $errors,
+                $this->bookingConflictStatus($firstError),
             );
         }
 
@@ -197,5 +203,15 @@ class BookingController extends MobileApiController
             ->whereDoesntHave('qrCodeTokens')
             ->whereDoesntHave('queueEntries')
             ->delete();
+    }
+
+    protected function bookingConflictStatus(?string $message): int
+    {
+        $normalized = strtolower((string) $message);
+
+        return str_contains($normalized, 'fully booked')
+            || str_contains($normalized, 'one booking per service')
+                ? 409
+                : 422;
     }
 }

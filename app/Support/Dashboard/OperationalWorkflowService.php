@@ -376,7 +376,7 @@ class OperationalWorkflowService
                 ->whereKey($branch->getKey())
                 ->lockForUpdate()
                 ->first();
-            $walkInSlot = $this->timeSlots->ensureCurrentWalkInSlotIsBookable(
+            $walkInSlot = $this->timeSlots->ensureCurrentWalkInSlotIsBookableWithLock(
                 branchId: $branch->getKey(),
                 serviceId: $service->getKey(),
             );

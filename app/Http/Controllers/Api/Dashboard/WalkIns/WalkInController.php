@@ -20,6 +20,7 @@ use App\Support\Dashboard\DashboardFormatting;
 use App\Support\Dashboard\OperationalWorkflowService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
+use Illuminate\Validation\ValidationException;
 
 class WalkInController extends DashboardApiController
 {
@@ -191,7 +192,25 @@ class WalkInController extends DashboardApiController
         $this->ensureCompanyAccess($request, $branch);
         $this->ensureCompanyAccess($request, $service);
 
-        $created = $this->workflow->registerWalkIn($request->validated());
+        try {
+            $created = $this->workflow->registerWalkIn($request->validated());
+        } catch (ValidationException $exception) {
+            $errors = $exception->errors();
+            $firstError = null;
+            foreach ($errors as $messages) {
+                if (is_array($messages) && $messages !== []) {
+                    $firstError = (string) ($messages[0] ?? null);
+                    break;
+                }
+            }
+
+            return $this->respondValidationError(
+                $firstError ?: 'Selected walk-in slot is not available.',
+                $errors,
+                $this->walkInConflictStatus($firstError),
+            );
+        }
+
         $this->invalidateDashboardCache($request, $this->currentCompanyId($request));
 
         return $this->respond(
@@ -269,6 +288,16 @@ class WalkInController extends DashboardApiController
             'qrCodeTokens',
             'queueEntries.servedByStaff',
         ];
+    }
+
+    protected function walkInConflictStatus(?string $message): int
+    {
+        $normalized = strtolower((string) $message);
+
+        return str_contains($normalized, 'capacity')
+            || str_contains($normalized, 'full')
+                ? 409
+                : 422;
     }
 
     protected function transformTicket(WalkInTicket $ticket): array
