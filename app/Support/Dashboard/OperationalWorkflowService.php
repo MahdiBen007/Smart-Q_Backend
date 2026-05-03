@@ -72,6 +72,7 @@ class OperationalWorkflowService
                     return [
                         'synced' => 0,
                         'requeued' => 0,
+                        'missed_timeout_cancelled' => 0,
                         'pruned' => 0,
                         'cancelled' => 0,
                     ];
@@ -83,7 +84,8 @@ class OperationalWorkflowService
 
         $synced = $this->syncTodaysAppointmentsToQueue($companyId);
         $requeued = 0;
-        $missedTimeoutCancelled = $this->cancelEntriesByCallingTimeout($companyId, $absentGraceSeconds);
+        // No auto-cancel on calling grace; staff Skip cancels and removes entries from the active queue.
+        $missedTimeoutCancelled = 0;
         $pruned = $this->pruneInvalidAppointmentQueueEntries($companyId);
         $cancelled = $this->cancelUnattendedPastAppointments($companyId);
 
@@ -476,11 +478,16 @@ class OperationalWorkflowService
             );
 
             $session = $entry->queueSession()->firstOrFail();
+            $entry->loadMissing(['appointment', 'walkInTicket']);
 
             if ($entry->walkInTicket) {
                 $entry->update([
                     'queue_status' => QueueEntryStatus::Cancelled,
+                    'calling_started_at' => null,
                     'service_started_at' => null,
+                    'reserved_by_counter_id' => null,
+                    'reserved_until' => null,
+                    'cancel_reason' => 'staff_skip',
                 ]);
 
                 $entry->walkInTicket->update([
@@ -496,17 +503,28 @@ class OperationalWorkflowService
                 return $updatedEntry;
             }
 
-            $ordered = $this->activeEntries($session)
-                ->reject(fn (QueueEntry $item) => $item->getKey() === $entry->getKey())
-                ->push($entry)
-                ->values();
-
-            $servingId = $ordered->first()?->getKey();
-            $entry->forceFill([
+            $appointment = $entry->appointment;
+            $entry->update([
+                'queue_status' => QueueEntryStatus::Cancelled,
+                'calling_started_at' => null,
                 'service_started_at' => null,
-            ])->save();
+                'reserved_by_counter_id' => null,
+                'reserved_until' => null,
+                'cancel_reason' => 'staff_skip',
+            ]);
 
-            $this->resequence($session, $ordered->pluck('id')->all(), $servingId);
+            $this->archiveQueueEntry($session, $entry, clearServiceStartedAt: true);
+
+            if (
+                $appointment
+                && ! in_array($appointment->appointment_status, [AppointmentStatus::Cancelled, AppointmentStatus::NoShow], true)
+            ) {
+                $appointment->update([
+                    'appointment_status' => AppointmentStatus::NoShow,
+                ]);
+            }
+
+            $this->normalizeActiveEntries($session);
 
             $updatedEntry = $entry->refresh();
             $this->notifyQueueEntrySkipped($updatedEntry);
@@ -1067,6 +1085,7 @@ class OperationalWorkflowService
                 'appointment.customer.user',
                 'walkInTicket.customer.user',
             ])
+            ->whereNotNull('appointment_id')
             ->whereIn('queue_status', [QueueEntryStatus::Serving->value, QueueEntryStatus::Next->value])
             ->whereNull('checked_in_at')
             ->whereNotNull('calling_started_at');

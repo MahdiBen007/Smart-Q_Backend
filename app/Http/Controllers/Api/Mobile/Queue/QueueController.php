@@ -75,15 +75,16 @@ class QueueController extends MobileApiController
         $currentlyServingCode = $activeDeskEntry
             ? $this->entryDisplayCode($activeDeskEntry)
             : (in_array($entryStatus, ['serving', 'next'], true) ? $userTicketCode : '--');
-        $isAwaitingCheckIn = $entry->checked_in_at === null
+        $isAwaitingCheckIn = $entry->appointment_id !== null
+            && $entry->checked_in_at === null
             && in_array($entryStatus, ['serving', 'next'], true);
         $graceRemainingSeconds = 0;
 
         if ($isAwaitingCheckIn) {
-            $graceWindow = OperationalWorkflowService::ABSENT_CHECK_IN_GRACE_SECONDS;
-            $reference = $entry->service_started_at ?? $entry->updated_at ?? $entry->created_at;
+            $timeoutSeconds = max((int) ($entry->wait_timeout_seconds ?: OperationalWorkflowService::ABSENT_CHECK_IN_GRACE_SECONDS), 1);
+            $reference = $entry->calling_started_at;
             $elapsed = $reference ? max($reference->diffInSeconds(now(), false), 0) : 0;
-            $graceRemainingSeconds = max($graceWindow - $elapsed, 0);
+            $graceRemainingSeconds = max($timeoutSeconds - $elapsed, 0);
         }
         $isCheckedIn = $entry->checked_in_at !== null;
         $isInService = in_array($entryStatus, ['serving', 'next'], true);
@@ -162,7 +163,8 @@ class QueueController extends MobileApiController
                 $description = mb_strtolower((string) $candidate->description);
 
                 $isSkipNotification = str_contains($message, 'turn was skipped')
-                    || str_contains($message, 'moved to position');
+                    || str_contains($message, 'moved to position')
+                    || str_contains($message, 'cancelled by staff');
 
                 if (! $isSkipNotification) {
                     return false;

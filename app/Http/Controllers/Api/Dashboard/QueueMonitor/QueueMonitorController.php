@@ -180,7 +180,7 @@ class QueueMonitorController extends DashboardApiController
         $this->invalidateDashboardCache($request, $entry->queueSession?->branch?->company_id);
         $message = $updated->walkInTicket
             ? 'Walk-in ticket cancelled successfully.'
-            : 'Queue entry skipped successfully.';
+            : 'Booking cancelled successfully.';
 
         return $this->respond(
             $this->transformQueueEntry($updated->loadMissing($this->queueEntryRelations())),
@@ -273,20 +273,20 @@ class QueueMonitorController extends DashboardApiController
     protected function transformQueueEntry(QueueEntry $entry): array
     {
         $ticketId = BookingCodeFormatter::queueEntryDisplayCode($entry);
-        $isAwaitingCheckIn = $entry->checked_in_at === null
+        // Walk-in tickets are issued on-site; only app appointments use a check-in grace window before skip / auto-timeout.
+        $isAwaitingCheckIn = $entry->appointment_id !== null
+            && $entry->checked_in_at === null
             && in_array($entry->queue_status->value, ['serving', 'next'], true);
         $checkInGraceRemainingSeconds = 0;
 
         if ($isAwaitingCheckIn) {
-            $graceStartedAt = $entry->service_started_at ?? $entry->updated_at ?? $entry->created_at;
-            $elapsedSeconds = $graceStartedAt === null
+            $timeoutSeconds = max((int) ($entry->wait_timeout_seconds ?: OperationalWorkflowService::ABSENT_CHECK_IN_GRACE_SECONDS), 1);
+            $referenceStart = $entry->calling_started_at;
+            $elapsedSeconds = $referenceStart === null
                 ? 0
-                : max($graceStartedAt->diffInSeconds(now(), false), 0);
+                : max($referenceStart->diffInSeconds(now(), false), 0);
 
-            $checkInGraceRemainingSeconds = max(
-                OperationalWorkflowService::ABSENT_CHECK_IN_GRACE_SECONDS - $elapsedSeconds,
-                0
-            );
+            $checkInGraceRemainingSeconds = max($timeoutSeconds - $elapsedSeconds, 0);
         }
 
         $estimatedWait = $entry->queue_status->value === 'serving'

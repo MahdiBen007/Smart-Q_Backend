@@ -226,19 +226,18 @@ class DashboardController extends DashboardApiController
         $estimatedWait = $entry->queue_status->value === QueueEntryStatus::Serving->value
             ? 0
             : max(($entry->queue_position - 1) * $serviceDurationMinutes, 0);
-        $isAwaitingCheckIn = $entry->checked_in_at === null
+        $isAwaitingCheckIn = $entry->appointment_id !== null
+            && $entry->checked_in_at === null
             && in_array($entry->queue_status->value, [QueueEntryStatus::Serving->value, QueueEntryStatus::Next->value], true);
         $checkInGraceRemainingSeconds = 0;
 
         if ($isAwaitingCheckIn) {
-            $graceStartedAt = $entry->service_started_at ?? $entry->updated_at ?? $entry->created_at;
-            $elapsedSeconds = $graceStartedAt === null
+            $timeoutSeconds = max((int) ($entry->wait_timeout_seconds ?: OperationalWorkflowService::ABSENT_CHECK_IN_GRACE_SECONDS), 1);
+            $referenceStart = $entry->calling_started_at;
+            $elapsedSeconds = $referenceStart === null
                 ? 0
-                : max($graceStartedAt->diffInSeconds(now(), false), 0);
-            $checkInGraceRemainingSeconds = max(
-                OperationalWorkflowService::ABSENT_CHECK_IN_GRACE_SECONDS - $elapsedSeconds,
-                0
-            );
+                : max($referenceStart->diffInSeconds(now(), false), 0);
+            $checkInGraceRemainingSeconds = max($timeoutSeconds - $elapsedSeconds, 0);
         }
 
         return $this->respond([
