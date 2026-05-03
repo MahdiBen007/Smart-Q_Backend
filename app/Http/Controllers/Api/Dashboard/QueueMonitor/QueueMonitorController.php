@@ -11,6 +11,7 @@ use App\Models\Counter;
 use App\Models\DailyQueueSession;
 use App\Models\QueueEntry;
 use App\Models\Service;
+use App\Models\StaffMember;
 use App\Support\Dashboard\BookingCodeFormatter;
 use App\Support\Dashboard\DashboardCatalog;
 use App\Support\Dashboard\DashboardFormatting;
@@ -26,12 +27,7 @@ class QueueMonitorController extends DashboardApiController
     public function bootstrap(Request $request)
     {
         $staffMember = $request->user()?->staffMember;
-        $workerCounterName = null;
-        if ($staffMember?->counter_id) {
-            $workerCounterName = Counter::query()
-                ->whereKey($staffMember->counter_id)
-                ->value('counter_name');
-        }
+        $workerCounterName = $this->resolveWorkerCounterDisplay($staffMember);
 
         $this->workflow->runQueueAutomationCycle($this->currentCompanyId($request));
 
@@ -357,5 +353,61 @@ class QueueMonitorController extends DashboardApiController
             'closing_soon' => 'Maintenance',
             default => 'Active',
         };
+    }
+
+    /**
+     * Prefer assigned counter; fallback to first counter at the branch that serves
+     * the staff member's legacy service_id (pre-counter migration data).
+     */
+    protected function resolveWorkerCounterDisplay(?StaffMember $staffMember): ?string
+    {
+        if (! $staffMember) {
+            return null;
+        }
+
+        if ($staffMember->counter_id) {
+            $counter = Counter::query()
+                ->whereKey($staffMember->counter_id)
+                ->first(['counter_name', 'counter_code']);
+
+            return $this->formatCounterDisplay($counter);
+        }
+
+        if ($staffMember->service_id && $staffMember->branch_id) {
+            $counter = Counter::query()
+                ->where('branch_id', $staffMember->branch_id)
+                ->whereHas('services', fn ($query) => $query->whereKey($staffMember->service_id))
+                ->orderBy('display_order')
+                ->orderBy('counter_name')
+                ->first(['counter_name', 'counter_code']);
+
+            return $this->formatCounterDisplay($counter);
+        }
+
+        return null;
+    }
+
+    protected function formatCounterDisplay(?Counter $counter): ?string
+    {
+        if (! $counter) {
+            return null;
+        }
+
+        $name = trim((string) $counter->counter_name);
+        $code = trim((string) $counter->counter_code);
+
+        if ($name === '' && $code === '') {
+            return null;
+        }
+
+        if ($code === '') {
+            return $name;
+        }
+
+        if ($name === '') {
+            return $code;
+        }
+
+        return $name.' · '.$code;
     }
 }
