@@ -273,7 +273,6 @@ class CnasOnlySeeder extends Seeder
                     'code' => 'CNAS-WRK-ALG-01',
                     'branch_key' => 'algiers_center',
                     'service_key' => 'carte_chifa',
-                    'counter_slot' => 0,
                 ],
                 [
                     'email' => 'worker.alg02@cnas.dz',
@@ -282,7 +281,6 @@ class CnasOnlySeeder extends Seeder
                     'code' => 'CNAS-WRK-ALG-02',
                     'branch_key' => 'algiers_center',
                     'service_key' => 'depot_dossier',
-                    'counter_slot' => 1,
                 ],
                 [
                     'email' => 'worker.bez01@cnas.dz',
@@ -291,7 +289,6 @@ class CnasOnlySeeder extends Seeder
                     'code' => 'CNAS-WRK-BEZ-01',
                     'branch_key' => 'bab_ezzouar',
                     'service_key' => 'depot_dossier',
-                    'counter_slot' => 0,
                 ],
                 [
                     'email' => 'worker.bez02@cnas.dz',
@@ -300,7 +297,6 @@ class CnasOnlySeeder extends Seeder
                     'code' => 'CNAS-WRK-BEZ-02',
                     'branch_key' => 'bab_ezzouar',
                     'service_key' => 'carte_chifa',
-                    'counter_slot' => 1,
                 ],
                 [
                     'email' => 'worker.orn01@cnas.dz',
@@ -309,7 +305,6 @@ class CnasOnlySeeder extends Seeder
                     'code' => 'CNAS-WRK-ORN-01',
                     'branch_key' => 'oran',
                     'service_key' => 'remboursement',
-                    'counter_slot' => 0,
                 ],
                 [
                     'email' => 'worker.orn02@cnas.dz',
@@ -318,7 +313,6 @@ class CnasOnlySeeder extends Seeder
                     'code' => 'CNAS-WRK-ORN-02',
                     'branch_key' => 'oran',
                     'service_key' => 'controle_medical',
-                    'counter_slot' => 1,
                 ],
                 [
                     'email' => 'worker.cst01@cnas.dz',
@@ -327,7 +321,6 @@ class CnasOnlySeeder extends Seeder
                     'code' => 'CNAS-WRK-CST-01',
                     'branch_key' => 'constantine',
                     'service_key' => 'controle_medical',
-                    'counter_slot' => 0,
                 ],
                 [
                     'email' => 'worker.cst02@cnas.dz',
@@ -336,28 +329,21 @@ class CnasOnlySeeder extends Seeder
                     'code' => 'CNAS-WRK-CST-02',
                     'branch_key' => 'constantine',
                     'service_key' => 'remboursement',
-                    'counter_slot' => 1,
                 ],
             ];
 
             foreach ($workers as $worker) {
-                $branchKey = $worker['branch_key'];
-                $counterId = optional(
-                    $branchCounters->get($branchKey)?->values()->get($worker['counter_slot'])
-                )->getKey();
-
                 $this->seedDashboardUser(
                     email: $worker['email'],
                     phoneNumber: $worker['phone'],
                     password: '12345678',
                     role: UserRoleName::Staff,
                     companyId: $company->getKey(),
-                    branchId: $branches[$branchKey]->getKey(),
+                    branchId: $branches[$worker['branch_key']]->getKey(),
                     serviceId: $services[$worker['service_key']]->getKey(),
                     fullName: $worker['name'],
                     displayStaffCode: $worker['code'],
                     isOnline: true,
-                    counterId: $counterId,
                 );
             }
 
@@ -453,7 +439,6 @@ class CnasOnlySeeder extends Seeder
         string $fullName,
         string $displayStaffCode,
         bool $isOnline,
-        ?string $counterId = null,
     ): void {
         $user = User::query()->updateOrCreate(
             ['email' => $email],
@@ -470,28 +455,19 @@ class CnasOnlySeeder extends Seeder
             'role_name' => $role,
         ]);
 
-        $staffAttributes = [
-            'company_id' => $companyId,
-            'branch_id' => $branchId,
-            'full_name' => $fullName,
-            'display_staff_code' => $displayStaffCode,
-            'employment_status' => EmploymentStatus::Active,
-            'avatar_url' => null,
-            'is_online' => $isOnline,
-            'last_active_at' => now(),
-        ];
-
-        if ($role === UserRoleName::Staff) {
-            $staffAttributes['counter_id'] = $counterId;
-            $staffAttributes['service_id'] = null;
-        } else {
-            $staffAttributes['counter_id'] = null;
-            $staffAttributes['service_id'] = $serviceId;
-        }
-
         StaffMember::query()->updateOrCreate(
             ['user_id' => $user->getKey()],
-            $staffAttributes
+            [
+                'company_id' => $companyId,
+                'branch_id' => $branchId,
+                'service_id' => $serviceId,
+                'full_name' => $fullName,
+                'display_staff_code' => $displayStaffCode,
+                'employment_status' => EmploymentStatus::Active,
+                'avatar_url' => null,
+                'is_online' => $isOnline,
+                'last_active_at' => now(),
+            ]
         );
     }
 }
