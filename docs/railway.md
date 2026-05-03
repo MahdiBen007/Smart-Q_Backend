@@ -5,7 +5,8 @@ This project is configured for the standard Railway Laravel deployment flow usin
 ## What this setup does
 
 - Lets Railway auto-detect Laravel and run it via its PHP/Laravel runtime.
-- Runs `php artisan migrate --force` as a pre-deploy command through `railway.json`.
+- Runs `php artisan migrate --force` and `php artisan optimize:clear` as a pre-deploy command through `railway.json` (no automatic `db:seed`, so production data is not reset on each deploy).
+- To load the CNAS demo dataset once, run in a Railway shell: `php artisan db:seed --class="Database\Seeders\CnasOnlySeeder" --force` (with `SEED_CNAS_ONLY=true` if you use `DatabaseSeeder` routing).
 - Uses `/up` as the healthcheck path.
 
 ## Deploy steps

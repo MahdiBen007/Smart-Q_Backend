@@ -224,6 +224,7 @@ class AuthController extends DashboardApiController
                 'counter' => $staffMember->counter ? [
                     'id' => $staffMember->counter->getKey(),
                     'name' => $staffMember->counter->counter_name,
+                    'code' => $staffMember->counter->counter_code,
                 ] : null,
             ] : null,
             'preferences' => $user->preference?->dashboard_settings,

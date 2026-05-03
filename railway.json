@@ -4,7 +4,7 @@
     "builder": "RAILPACK"
   },
   "deploy": {
-    "preDeployCommand": "php artisan migrate --force && if [ \"$RUN_CNAS_SEED_ON_DEPLOY\" = \"true\" ]; then php artisan db:seed --class=\"Database\\\\Seeders\\\\CnasOnlySeeder\" --force; fi && php artisan optimize:clear",
+    "preDeployCommand": "php artisan migrate --force && php artisan optimize:clear",
     "healthcheckPath": "/up",
     "healthcheckTimeout": 120,
     "restartPolicyType": "ON_FAILURE",
